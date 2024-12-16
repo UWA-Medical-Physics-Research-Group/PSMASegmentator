@@ -38,7 +38,7 @@ def expand_segmentation(predicted_image, pet_image,
     ct_segmentation_array = ct_segmentation_array.astype(int)
 
     #Just get the components of the CT segmentation equal to 5 or 21 or 22 (liver, bladder, prostate)
-    ct_bladder_prostate = np.isin(ct_segmentation_array, [21, 22]).astype(np.uint8)
+    ct_bladder_prostate = np.isin(ct_segmentation_array, [5, 21, 22]).astype(np.uint8)
     ct_bladder_prostate = np.transpose(ct_bladder_prostate, (2, 1, 0)) #Converting from (z, y, x) to (x, y, z) format
 
 
