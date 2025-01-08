@@ -67,7 +67,7 @@ def read_dicom_image(dicom_path):
     return sitk.ReadImage(dicom_images)
 
 
-def convertPET2SUV (dicom_dir, save_dir):
+def convertPET2SUV (dicom_dir, save_dir, write_output = False):
     
     '''
     Converts PET image voxels into SUV units, and saves as Nifty format (.nii.gz) in the
@@ -95,7 +95,7 @@ def convertPET2SUV (dicom_dir, save_dir):
     #Convert our PET image
     pet_image *= suv_factor
     
-    #Write the image
-    sitk.WriteImage(pet_image, save_dir + '.nii.gz')
+    if write_output == True:    
+        sitk.WriteImage(pet_image, save_dir + '.nii.gz')
     
     return pet_image
