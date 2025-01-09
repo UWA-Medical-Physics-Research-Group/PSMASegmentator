@@ -3,7 +3,7 @@ import requests
 import zipfile
 from pathlib import Path
 
-def download_fold_weights(github_base_url, output_dir, fold_numbers, cleanup=True):
+def download_fold_weights(github_base_url, output_dir, fold_numbers = [0,1,2,3,4], cleanup=True):
     """
     Downloads and extracts pre-trained weights for individual folds from GitHub release assets.
 
