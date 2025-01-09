@@ -16,7 +16,7 @@ def get_psmasegmentator_dir():
 
 def nnunet_setup():
     """
-    Set up the required paths to run nnunet.
+    Set up the required paths to run nnunet, and returns the directory to these weights.
     """
     psma_segmentator_dir = get_psmasegmentator_dir()
     weights_dir = psma_segmentator_dir / "weights"
@@ -24,3 +24,5 @@ def nnunet_setup():
     os.environ["nnUNet_raw"] = str(weights_dir) #Should not be needed for running inference.
     os.environ["nnUNet_preprocessed"] = str(weights_dir) #Should not be needed for running inference.
     os.environ["nnUNet_results"] = str(weights_dir)
+
+    return weights_dir
