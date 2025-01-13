@@ -11,9 +11,39 @@ from nnunetv2.inference.predict_from_raw_data import nnUNetPredictor
 from nnunetv2.utilities.file_path_utilities import get_output_folder
 from dicom import convertPET2SUV, read_dicom_image
 
-def initialise_predictor(model_folder, device='cuda', step_size=0.5, use_tta=False, verbose=False):
+def is_dicom(input_path):
     """
-    Initialises the nnUNetPredictor for inference.
+    Determines if the input is a DICOM file or directory.
+
+    Args:
+        input_path (str or Path): Path to the input file or directory.
+
+    Returns:
+        bool: True if the input is in DICOM format, False otherwise.
+    """
+    input_path = Path(input_path)
+
+    if input_path.is_dir():
+        # Check if any file in the directory is a valid DICOM file
+        for file in input_path.iterdir():
+            try:
+                pydicom.dcmread(file, stop_before_pixels=True)
+                return True
+            except Exception:
+                continue
+    else:
+        try:
+            pydicom.dcmread(input_path, stop_before_pixels=True)
+            return True
+        except Exception:
+            pass
+
+    return False
+
+def nnUNet_predict_image(model_folder, pet_input, ct_input, output_path,
+                         device='cuda', step_size=0.5, use_tta=False, verbose=False):
+    """
+    Runs inference using nnUNet for a single PET and CT image pair.
 
     Args:
         model_folder (str): Path to the trained model folder.
@@ -54,50 +84,7 @@ def initialise_predictor(model_folder, device='cuda', step_size=0.5, use_tta=Fal
     predictor.initialise_from_trained_model_folder(model_folder, 
                                                    use_folds=None,
                                                    checkpoint_name = "checkpoint_final.pth")
-    return predictor
-
-def is_dicom(input_path):
-    """
-    Determines if the input is a DICOM file or directory.
-
-    Args:
-        input_path (str or Path): Path to the input file or directory.
-
-    Returns:
-        bool: True if the input is in DICOM format, False otherwise.
-    """
-    input_path = Path(input_path)
-
-    if input_path.is_dir():
-        # Check if any file in the directory is a valid DICOM file
-        for file in input_path.iterdir():
-            try:
-                pydicom.dcmread(file, stop_before_pixels=True)
-                return True
-            except Exception:
-                continue
-    else:
-        try:
-            pydicom.dcmread(input_path, stop_before_pixels=True)
-            return True
-        except Exception:
-            pass
-
-    return False
-
-def predict_image(pet_input, ct_input, predictor, output_path):
-    """
-    Runs the prediction pipeline for PET and CT images.
-
-    Args:
-        pet_input (str): Path to the PET image (DICOM or NIfTI).
-        ct_input (str): Path to the CT image (DICOM or NIfTI).
-        predictor (nnUNetPredictor): Initialized nnUNetPredictor object.
-        output_path (str): Path to save the predicted segmentation.
-
-    Returns:
-        None
-    """
+    
     pet_input = Path(pet_input)
     ct_input = Path(ct_input)
     output_path = Path(output_path)
@@ -149,14 +136,6 @@ def predict_image(pet_input, ct_input, predictor, output_path):
 
         print("Running prediction...")
 
-        #Initialise the predictor
-        predictor = initialise_predictor(predictor, 
-                                         device='cuda', 
-                                         step_size=0.5, 
-                                         use_tta=False, 
-                                         verbose=False)
-        
-        # Run prediction
         predictor.predict_from_files(list_of_lists_or_source_folder=tmp_dir / "images2predict",
                                      output_folder_or_list_of_truncated_output_files=output_path,
                                      save_probabilities=False,
