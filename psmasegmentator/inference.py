@@ -51,7 +51,9 @@ def initialise_predictor(model_folder, device='cuda', step_size=0.5, use_tta=Fal
         verbose=verbose,
         allow_tqdm=True
     )
-    predictor.initialise_from_trained_model_folder(model_folder, use_folds=None)
+    predictor.initialise_from_trained_model_folder(model_folder, 
+                                                   use_folds=None,
+                                                   checkpoint_name = "checkpoint_final.pth")
     return predictor
 
 def is_dicom(input_path):
@@ -111,7 +113,7 @@ def predict_image(pet_input, ct_input, predictor, output_path):
             pet_image = sitk.ReadImage(str(pet_input))
 
         # Save PET image to temporary directory
-        pet_temp_path = tmp_dir / "PSMA01_0000.nii.gz"
+        pet_temp_path = tmp_dir / "images2predict/PSMA01_0000.nii.gz"
         sitk.WriteImage(pet_image, str(pet_temp_path))
 
         # Process CT image
@@ -140,8 +142,27 @@ def predict_image(pet_input, ct_input, predictor, output_path):
             )
 
         # Save resampled CT image to temporary directory
-        ct_temp_path = tmp_dir / "PSMA01_0001.nii.gz"
+        ct_temp_path = tmp_dir / "images2predict/PSMA01_0001.nii.gz"
         sitk.WriteImage(resampled_ct_image, str(ct_temp_path))
 
+        print(f"Checking the directory of images: {tmp_dir}")
+
         print("Running prediction...")
+
+        #Initialise the predictor
+        predictor = initialise_predictor(predictor, 
+                                         device='cuda', 
+                                         step_size=0.5, 
+                                         use_tta=False, 
+                                         verbose=False)
+        
+        # Run prediction
+        predictor.predict_from_files(list_of_lists_or_source_folder=tmp_dir / "images2predict",
+                                     output_folder_or_list_of_truncated_output_files=output_path,
+                                     save_probabilities=False,
+                                     overwrite=True,
+                                     num_processes_preprocessing=2,
+                                     num_processes_segmentation_export=4)
+
+
 
