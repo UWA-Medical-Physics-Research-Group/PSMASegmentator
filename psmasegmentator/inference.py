@@ -1,14 +1,11 @@
-import os
 import tempfile
-import shutil
 from pathlib import Path
-import nibabel as nib
 import numpy as np
 from tqdm import tqdm
 import SimpleITK as sitk
 import torch
+import pydicom
 from nnunetv2.inference.predict_from_raw_data import nnUNetPredictor
-from nnunetv2.utilities.file_path_utilities import get_output_folder
 from dicom import convertPET2SUV, read_dicom_image
 
 def is_dicom(input_path):
@@ -47,6 +44,10 @@ def nnUNet_predict_image(model_folder, pet_input, ct_input, output_path,
 
     Args:
         model_folder (str): Path to the trained model folder.
+        pet_input (str): Path to the input PET image.
+        ct_input (str): Path to the input CT image.
+        output_path (str): Path to the output directory where segmentation results are saved
+                           If empty, will return the segmentation results.
         device (str): Device for inference ('cuda', 'cpu', or 'mps'). Defaults to 'cuda'.
         step_size (float): Step size for sliding window prediction. Defaults to 0.5.
         use_tta (bool): Whether to use test-time augmentation (mirroring). Defaults to False.
@@ -81,7 +82,7 @@ def nnUNet_predict_image(model_folder, pet_input, ct_input, output_path,
         verbose=verbose,
         allow_tqdm=True
     )
-    predictor.initialise_from_trained_model_folder(model_folder, 
+    predictor.initialize_from_trained_model_folder(model_folder, 
                                                    use_folds=None,
                                                    checkpoint_name = "checkpoint_final.pth")
     
@@ -100,7 +101,7 @@ def nnUNet_predict_image(model_folder, pet_input, ct_input, output_path,
             pet_image = sitk.ReadImage(str(pet_input))
 
         # Save PET image to temporary directory
-        pet_temp_path = tmp_dir / "images2predict/PSMA01_0000.nii.gz"
+        pet_temp_path = tmp_dir / "PSMA01_0000.nii.gz"
         sitk.WriteImage(pet_image, str(pet_temp_path))
 
         # Process CT image
@@ -129,19 +130,23 @@ def nnUNet_predict_image(model_folder, pet_input, ct_input, output_path,
             )
 
         # Save resampled CT image to temporary directory
-        ct_temp_path = tmp_dir / "images2predict/PSMA01_0001.nii.gz"
+        ct_temp_path = tmp_dir / "PSMA01_0001.nii.gz"
         sitk.WriteImage(resampled_ct_image, str(ct_temp_path))
 
         print(f"Checking the directory of images: {tmp_dir}")
 
         print("Running prediction...")
 
-        predictor.predict_from_files(list_of_lists_or_source_folder=tmp_dir / "images2predict",
-                                     output_folder_or_list_of_truncated_output_files=output_path,
+
+        dir_in = str(tmp_dir)
+        dir_out = str(output_path)
+        
+        
+        predictor.predict_from_files(list_of_lists_or_source_folder=dir_in,
+                                     output_folder_or_list_of_truncated_output_files=dir_out,
                                      save_probabilities=False,
                                      overwrite=True,
-                                     num_processes_preprocessing=2,
-                                     num_processes_segmentation_export=4)
+                                     )
 
 
 
