@@ -53,8 +53,6 @@ def nnUNet_predict_image(model_folder, pet_input, ct_input, output_path,
         use_tta (bool): Whether to use test-time augmentation (mirroring). Defaults to False.
         verbose (bool): Whether to enable verbose output. Defaults to False.
 
-    Returns:
-        nnUNetPredictor: Configured nnUNetPredictor object.
     """
     assert device in ['cuda', 'cpu', 'mps'] or isinstance(device, torch.device), (
         f"Invalid device specified: {device}. Must be 'cuda', 'cpu', 'mps', or a valid torch.device."
