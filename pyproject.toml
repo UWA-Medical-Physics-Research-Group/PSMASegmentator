@@ -4,13 +4,14 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "psma_segmentator"
-version = "0.0.1"
+version = "0.0.2"
 description = "PSMA PET Auto-Segmentation Tool"
 readme = "README.md"
 requires-python = ">=3.8"
 license = { file = "LICENSE" }
 authors = [
     { name = "Jake Kendrick", email = "jake@example.com" }
+    { name = "Joel Noble, email = "joel.noble@uwa.edu.au}
 ]
 dependencies = [
     "torch>=2.1.2",
@@ -31,7 +32,7 @@ dependencies = [
 ]
 
 [project.scripts]
-psma-segmentator = "psma_segmentator.cli:main"
+psma_segmentator = "psma_segmentator.cli:main"
 
 [project.urls]
 "Homepage" = "https://github.com/yourusername/psma_segmentator"

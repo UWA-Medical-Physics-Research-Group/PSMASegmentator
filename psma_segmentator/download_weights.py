@@ -8,7 +8,7 @@ import zipfile
 import os
 from pathlib import Path
 from importlib.metadata import version
-__version__ = version("psma-segmentator")
+__version__ = version("psma_segmentator")
 
 def download_fold_weights(github_base_url, output_dir, token, fold_numbers=[0, 1, 2, 3, 4], cleanup=True):
     """
@@ -96,12 +96,13 @@ def download_fold_weights(github_base_url, output_dir, token, fold_numbers=[0, 1
 
     return str(output_dir)
 
-def download_fold_weights_via_api(output_dir, fold_numbers=[0, 1, 2, 3, 4], cleanup=True):
+def download_fold_weights_via_api(output_dir, token, fold_numbers=[0, 1, 2, 3, 4], cleanup=True):
     """
     Downloads and extracts pre-trained weights for the current software version from GitHub release assets.
 
     Args:
         output_dir (str): The directory where the extracted files should be saved.
+        token (str): PAT for github repo
         fold_numbers (list): List of fold numbers to download (e.g., [0, 1, 2, 3, 4]).
         cleanup (bool): Whether to delete the downloaded zip files after extraction. Defaults to True.
 
@@ -110,7 +111,6 @@ def download_fold_weights_via_api(output_dir, fold_numbers=[0, 1, 2, 3, 4], clea
     """
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
-    token = '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'
     github_repo = "UWA-Medical-Physics-Research-Group/PSMASegmentator"
     current_version = __version__
 
