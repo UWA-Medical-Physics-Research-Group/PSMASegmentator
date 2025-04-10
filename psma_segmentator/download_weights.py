@@ -8,7 +8,6 @@ import zipfile
 import os
 from pathlib import Path
 from importlib.metadata import version
-__version__ = version("psma_segmentator")
 
 def download_fold_weights(github_base_url, output_dir, token, fold_numbers=[0, 1, 2, 3, 4], cleanup=True):
     """
@@ -96,13 +95,18 @@ def download_fold_weights(github_base_url, output_dir, token, fold_numbers=[0, 1
 
     return str(output_dir)
 
-def download_fold_weights_via_api(output_dir, token, fold_numbers=[0, 1, 2, 3, 4], cleanup=True):
+def download_fold_weights_via_api(output_dir, 
+                                    headers, 
+                                    release_data,
+                                    fold_numbers=[0, 1, 2, 3, 4], 
+                                    cleanup=True):
     """
     Downloads and extracts pre-trained weights for the current software version from GitHub release assets.
 
     Args:
         output_dir (str): The directory where the extracted files should be saved.
         token (str): PAT for github repo
+        release_data (dict): Release data containing asset information.
         fold_numbers (list): List of fold numbers to download (e.g., [0, 1, 2, 3, 4]).
         cleanup (bool): Whether to delete the downloaded zip files after extraction. Defaults to True.
 
@@ -111,19 +115,18 @@ def download_fold_weights_via_api(output_dir, token, fold_numbers=[0, 1, 2, 3, 4
     """
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
-    github_repo = "UWA-Medical-Physics-Research-Group/PSMASegmentator"
-    current_version = __version__
+    # repo = "UWA-Medical-Physics-Research-Group/PSMASegmentator"
 
-    headers = {
-        "Authorization": f"Bearer {token}",
-        "User-Agent": "PSMASegmentator"
-    }
+    # headers = {
+    #     "Authorization": f"Bearer {token}",
+    #     "User-Agent": "PSMASegmentator"
+    # }
 
-    # Get release data
-    api_url = f"https://api.github.com/repos/{github_repo}/releases/tags/{'v' + current_version}"
-    response = requests.get(api_url, headers=headers)
-    response.raise_for_status()
-    release_data = response.json()
+    # # Get release data
+    # api_url = f"https://api.github.com/repos/{repo}/releases/tags/{'v' + __version__}"
+    # response = requests.get(api_url, headers=headers)
+    # response.raise_for_status()
+    # release_data = response.json()
 
     # Download dataset.json
     dataset_json_path = output_dir / "dataset.json"
