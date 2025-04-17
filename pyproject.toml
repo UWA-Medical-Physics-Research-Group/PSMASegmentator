@@ -10,7 +10,7 @@ readme = "README.md"
 requires-python = ">=3.8"
 license = { file = "LICENSE" }
 authors = [
-    { name = "Jake Kendrick", email = "jake@example.com" }
+    { name = "Jake Kendrick", email = "jake.kendrick@uwa.edu.au" }
     { name = "Joel Noble, email = "joel.noble@uwa.edu.au}
 ]
 dependencies = [
@@ -28,7 +28,8 @@ dependencies = [
     "dicom2nifti",
     "pyarrow",
     "pydicom",
-    "TotalSegmentator==2.4.0"
+    "TotalSegmentator==2.4.0",
+    "platipy"
 ]
 
 [project.scripts]

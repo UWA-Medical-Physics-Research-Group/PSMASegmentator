@@ -62,7 +62,10 @@ def psma_segmentator(weights_dir: str = None,
                         output_dir: str = None, 
                         token: str = None,
                         version: str = None,
-                        device: str = "cuda" if torch.cuda.is_available() else "cpu"
+                        device: str = "cuda" if torch.cuda.is_available() else "cpu",
+                        incl_rtstructs: bool = False,
+                        verbose: bool = False,
+                        overwrite: bool = False,
                     ):
     """
     Runs the PSMA segmentation pipeline, including pre-processing and segmentation.
@@ -76,6 +79,10 @@ def psma_segmentator(weights_dir: str = None,
         device (str): Device for inference ("cpu" or "cuda").
         # file_format (str): Input file format, either "dicom" or "nifti". Defaults to "dicom".
     """
+    if output_dir is None:
+        input_path = Path(input_dir)
+        output_dir = str(input_path.parent / f"{input_path.name}_outputs")
+        print(f"\nOutput directory not specified. Using: {output_dir}")
     # Create output directory if it doesn't exist
     if not os.path.exists(output_dir):
         os.makedirs(output_dir)
@@ -107,7 +114,9 @@ def psma_segmentator(weights_dir: str = None,
     download_fold_weights_via_api(weights_dir, headers, release_data)  # Download model weights if needed
     
     # Preprocess the input files (if needed)
-    list_of_lists = pre_process(input_dir)
+    list_of_lists = pre_process(input_dir, incl_rtstructs, 
+                                verbose, overwrite,
+                                output_seg_dir=output_dir)
 
     segmentate(
         model_folder=weights_dir,
