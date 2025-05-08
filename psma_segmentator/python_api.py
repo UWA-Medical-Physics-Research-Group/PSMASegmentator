@@ -4,6 +4,7 @@ import csv
 import torch
 from importlib.metadata import version
 import requests
+import shutil
 from psma_segmentator.download_weights import download_fold_weights_via_api
 from psma_segmentator.inference import segmentate
 from psma_segmentator.pre_processing import pre_process
@@ -66,6 +67,7 @@ def psma_segmentator(weights_dir: str = None,
                         incl_rtstructs: bool = False,
                         verbose: bool = False,
                         overwrite: bool = False,
+                        preprocess_only: bool = False,
                     ):
     """
     Runs the PSMA segmentation pipeline, including pre-processing and segmentation.
@@ -77,14 +79,24 @@ def psma_segmentator(weights_dir: str = None,
         token (str): API token for downloading weights.
         version (str): Version of the PSMASegmentator release weights to use. If None, uses the latest version.
         device (str): Device for inference ("cpu" or "cuda").
-        # file_format (str): Input file format, either "dicom" or "nifti". Defaults to "dicom".
+        incl_rtstructs (bool): Whether to include RTSTRUCT processing.
+        verbose (bool): Verbosity level.
+        overwrite (bool): Whether to overwrite existing files.
+        preprocess_only (bool): If True, only pre-process the input files without segmentation.
     """
+    input_path = Path(input_dir)
+    
+    if incl_rtstructs == True and shutil.which("plastimatch") is None:
+        raise EnvironmentError(
+            "Plastimatch not found. Please install Plastimatch (e.g., via 'sudo apt install plastimatch') if you want to include RTSTRUCT processing."
+        )
+
     if output_dir is None:
-        input_path = Path(input_dir)
         output_dir = str(input_path.parent / f"{input_path.name}_outputs")
         print(f"\nOutput directory not specified. Using: {output_dir}")
+
     # Create output directory if it doesn't exist
-    if not os.path.exists(output_dir):
+    if not os.path.exists(output_dir) and not preprocess_only:
         os.makedirs(output_dir)
     if not os.path.exists(input_dir):
         raise FileNotFoundError(f"Input directory {input_dir} does not exist.")
@@ -113,11 +125,15 @@ def psma_segmentator(weights_dir: str = None,
 
     download_fold_weights_via_api(weights_dir, headers, release_data)  # Download model weights if needed
     
-    # Preprocess the input files (if needed)
-    list_of_lists = pre_process(input_dir, incl_rtstructs, 
-                                verbose, overwrite,
-                                output_seg_dir=output_dir)
-
+    # Preprocess the input files
+    output_prepro_dir = str(input_path.parent / f"{input_path.name}_preprocessed")
+    list_of_lists = pre_process(input_path, incl_rtstructs, 
+                                output_prepro_dir, output_pred_dir=output_dir,
+                                verbose=verbose, overwrite=overwrite)
+    if preprocess_only:
+        print("\nPre-processing (only) complete. No segmentation performed.")
+        return
+    
     segmentate(
         model_folder=weights_dir,
         list_of_lists=list_of_lists,
@@ -126,3 +142,4 @@ def psma_segmentator(weights_dir: str = None,
     )
 
     print("\nPSMA segmentation pipeline complete.")
+    return

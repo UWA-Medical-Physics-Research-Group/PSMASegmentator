@@ -37,6 +37,11 @@ def main():
         "-f", "--force", dest="overwrite", required=False, action="store_true",
         help="Overwrite existing pre-processing and segmentation results."
     )
+    parser.add_argument(
+        "-ppo", "--preprocess_only", required=False, action="store_true",
+        help="Pre-process the input files only. No segmentation will be performed."
+    )
+
     args = parser.parse_args()
 
     psma_segmentator(
@@ -48,6 +53,7 @@ def main():
                 incl_rtstructs = args.include_rtstructs,
                 verbose = args.verbose,
                 overwrite = args.overwrite,
+                preprocess_only = args.preprocess_only,
             )
 
 if __name__ == "__main__":

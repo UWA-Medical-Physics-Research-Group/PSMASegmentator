@@ -28,8 +28,7 @@ dependencies = [
     "dicom2nifti",
     "pyarrow",
     "pydicom",
-    "TotalSegmentator==2.4.0",
-    "platipy"
+    "TotalSegmentator==2.4.0"
 ]
 
 [project.scripts]

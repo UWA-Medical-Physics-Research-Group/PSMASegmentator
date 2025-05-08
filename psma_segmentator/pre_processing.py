@@ -8,7 +8,7 @@ import numpy as np
 import math
 import SimpleITK as sitk
 from collections import defaultdict
-from platipy.dicom.io.rtstruct_to_nifti import convert_rtstruct
+import subprocess
 from tqdm import tqdm
 
 
@@ -47,52 +47,67 @@ def get_modality_dirs_and_validate_pet(study_dir):
             except Exception:
                 continue
 
-        if len(modalities_present) > 1:
-            print(f"Multiple modalities found in {shorten_path(dicom_dir)}. Skipping entire study.")
-            return {}  # Abort processing for this study
+        tomographic_modalities = {"CT", "PT", "MR"}
+        tomo_modalities_found = modalities_present & tomographic_modalities
+        non_tomo_modalities = modalities_present - tomographic_modalities
+
+        if len(tomo_modalities_found) > 1:
+            print(f"ERROR: Conflicting tomographic modalities in {shorten_path(dicom_dir)}: {tomo_modalities_found}. Skipping entire study.")
+            return None
+
+        if tomo_modalities_found and non_tomo_modalities:
+            print(f"WARNING: Tomographic modality {tomo_modalities_found} mixed with non-tomographic {non_tomo_modalities} in {shorten_path(dicom_dir)}. Proceeding.")
 
         if modality == "PT":
+            missing_tags = []
+
+            # Required tags and conditions
             try:
-                assert "DECY" in ds.CorrectedImage
-                assert "ATTN" in ds.CorrectedImage
-                assert ds.DecayCorrection == "START"
-                assert ds.Units == "BQML"
-                assert hasattr(ds, "SeriesTime")
-                assert hasattr(ds, "SeriesDate")
-                assert hasattr(ds, "PatientWeight")
-                assert hasattr(ds, "RadiopharmaceuticalInformationSequence")
-                rds = ds.RadiopharmaceuticalInformationSequence[0]
-                assert hasattr(rds, "RadionuclideHalfLife")
-                assert hasattr(rds, "RadionuclideTotalDose")
-                assert hasattr(rds, "RadiopharmaceuticalStartTime")
+                corrected_image = representative_ds.CorrectedImage
+                if "DECY" not in corrected_image:
+                    missing_tags.append("CorrectedImage: 'DECY' missing")
+                if "ATTN" not in corrected_image:
+                    missing_tags.append("CorrectedImage: 'ATTN' missing")
             except Exception:
-                print(f"Invalid PET series found in {shorten_path(study_dir)}. Skipping entire study.")
-                return {}  # Abort processing for this study
+                missing_tags.append("CorrectedImage")
 
-        # Fast header-only check with SimpleITK (no image load)
-        try:
-            series_IDs = sitk.ImageSeriesReader.GetGDCMSeriesIDs(str(dicom_dir))
-            # if not series_IDs:
-            #     raise ValueError("No series IDs found")
+            if getattr(representative_ds, "DecayCorrection", None) != "START":
+                missing_tags.append("DecayCorrection != 'START'")
 
-            series_file_names = sitk.ImageSeriesReader.GetGDCMSeriesFileNames(str(dicom_dir), series_IDs[0])
-            # if not series_file_names:
-            #     raise ValueError("No files in series")
-            
-            # Just test the first slice
-            test_reader = sitk.ImageFileReader()
-            test_reader.SetFileName(series_file_names[0])
-            test_reader.ReadImageInformation()
-        except Exception as e:
-            print(f"SimpleITK header read failed in {shorten_path(dicom_dir)}. Skipping entire study. Error: {str(e)}")
-            return {}
+            if getattr(representative_ds, "Units", None) != "BQML":
+                missing_tags.append("Units != 'BQML'")
+
+            for attr in ["SeriesTime", "SeriesDate", "PatientWeight", "RadiopharmaceuticalInformationSequence"]:
+                if not hasattr(representative_ds, attr):
+                    missing_tags.append(attr)
+
+            rds = getattr(representative_ds, "RadiopharmaceuticalInformationSequence", [{}])[0]
+            for attr in ["RadionuclideHalfLife", "RadionuclideTotalDose", "RadiopharmaceuticalStartTime"]:
+                if not hasattr(rds, attr):
+                    missing_tags.append(f"RadiopharmaceuticalInformationSequence[0].{attr}")
+
+            if missing_tags:
+                print(f"Invalid PET series found in {shorten_path(dicom_dir)}. Missing or incorrect: {missing_tags}. Skipping entire study.")
+                return None
+
+        # Only attempt SimpleITK read for CT and PT
+        if modality in {"CT", "PT"}:
+            try:
+                series_IDs = sitk.ImageSeriesReader.GetGDCMSeriesIDs(str(dicom_dir))
+                series_file_names = sitk.ImageSeriesReader.GetGDCMSeriesFileNames(str(dicom_dir), series_IDs[0])
+                test_reader = sitk.ImageFileReader()
+                test_reader.SetFileName(series_file_names[0])
+                test_reader.ReadImageInformation()
+            except Exception as e:
+                print(f"SimpleITK header read failed in {shorten_path(dicom_dir)}. Skipping entire study. Error: {str(e)}")
+                return None
 
         dicom_series[modality] = (dicom_dir, ds)
-    # if 'CT' and 'PT' not in dicom_series.keys():
+
     if not {'CT', 'PT'}.issubset(dicom_series.keys()):
         print(f"CT and/or PET series not found in {shorten_path(study_dir)}. Skipping entire study.")
-        return {} # Abort processing for this study
-    
+        return None
+
     return dicom_series
 
 
@@ -161,136 +176,325 @@ def get_suv_bw_scale_factor(ds):
     return suv_bw_scale_factor
 
 
-def pre_process(input_dir, incl_rtstructs, verbose, overwrite, output_seg_dir):
-    input_dir = Path(input_dir)
+def plastimatch_rtstruct_to_nifti(ct_dcm, rt_dcm, output_dir_struct,
+                                    rename_map=None):
+    """
+    Convert RTSTRUCT DICOM file into separate NIfTI masks using Plastimatch.
+
+    Args:
+        ct_dcm (Path or str): Path to a single DICOM CT image file (used as reference).
+        rt_dcm (Path or str): Path to the RTSTRUCT DICOM file.
+        output_dir_struct (Path or str): Path to output directory for the structure NIfTI files.
+        rename_map (dict): Optional dictionary mapping original structure names (or keywords) to new filenames.
+
+    Raises:
+        RuntimeError: If conversion fails at any step.
+    """
+    ct_dcm = Path(ct_dcm)
+    rt_dcm = Path(rt_dcm)
+
+    try:
+        command = [
+            'plastimatch', 'convert',
+            '--input', str(rt_dcm),
+            '--referenced-ct', str(ct_dcm),
+            '--output-prefix', str(output_dir_struct) + os.sep,
+            '--prefix-format', 'nii.gz',
+            '--prune-empty',
+        ]
+        subprocess.run(command, check=True)
+    except subprocess.CalledProcessError as e:
+        raise RuntimeError(f"Plastimatch RTSTRUCT→NIfTI conversion failed: {e}")
+
+    for file in output_dir_struct.glob("*.nii.gz"):
+        original_filename = file.name
+        base, ext = original_filename.split(".", 1)  # Split at first dot only
+
+        # Apply rename_map if any match found
+        new_base = None
+        if rename_map:
+            for key, val in rename_map.items():
+                if key.lower() in base.lower():
+                    new_base = val
+                    break
+
+        if not new_base:
+            new_base = base.lower().replace("-", "").replace(" ", "_").replace("`", "")
+
+        new_name = new_base + "." + ext  # Preserve original extension exactly
+        new_path = file.parent / new_name
+
+        if original_filename != new_name:
+            file.rename(new_path)
+
+
+def pre_process(input_path, incl_rtstructs, 
+                output_prepro_dir, output_pred_dir, 
+                verbose, overwrite):
+    case_dirs = [d for d in input_path.iterdir() if d.is_dir()]
+    if not case_dirs:
+        raise ValueError("No case directories found.")
+    
+    output_dir_structs = (input_path.parent / f"{input_path.name}_structs") if incl_rtstructs else None
+    output_dir_gts = (input_path.parent / f"{input_path.name}_gt_segmentations") if incl_rtstructs else None
+    if incl_rtstructs:
+        output_dir_structs.mkdir(parents=True, exist_ok=True)
+        output_dir_gts.mkdir(parents=True, exist_ok=True)
+
+    # Filter to only cases needing prediction
+    if not overwrite:
+        case_dirs_to_predict = find_predicted(case_dirs, output_pred_dir, verbose)
+    else:
+        case_dirs_to_predict = case_dirs
+
+    if not case_dirs_to_predict:
+        print("All cases have existing predictions. Nothing to process.")
+        return []
+
+    # Among cases needing prediction, check which are already preprocessed
+    if not overwrite:
+        preprocessed = find_preprocessed(case_dirs_to_predict, output_prepro_dir, incl_rtstructs, output_dir_gts, verbose)
+    else:
+        preprocessed = []
+
+    preprocessed = preprocessed or []
+    preprocessed_case_names = {Path(p[0]).stem.rsplit("_", 1)[0] for p in preprocessed}  # assumes p[0] is CT path
+    remaining_case_dirs = [cd for cd in case_dirs_to_predict if cd.name not in preprocessed_case_names]
+
+    # Handle DICOM input
+    if any(f.suffix == ".dcm" for f in input_path.rglob("*")):
+        newly_processed = _handle_dicom_data(remaining_case_dirs,
+                                                output_prepro_dir, 
+                                                incl_rtstructs, output_dir_structs, output_dir_gts, 
+                                                verbose, overwrite, delete_structs_dir=False)
+        return preprocessed + (newly_processed or [])
+
+    # Handle NIfTI input
+    nii_files = list(input_path.rglob("*.nii.gz"))
+    if nii_files:
+        newly_processed = _handle_existing_nifti_files(nii_files, output_prepro_dir, overwrite)
+        return preprocessed + (newly_processed or [])
+
+    raise ValueError(f"No valid NIfTI or DICOM files found in {input_path}.")
+
+
+# Sub-functions
+
+def find_predicted(case_dirs, output_pred_dir, verbose=False):
+    remaining_dirs = []
+    for case_dir in case_dirs:
+        case_name = case_dir.name
+        pred_file = Path(output_pred_dir) / f"{case_name}.nii.gz"
+        if pred_file.exists():
+            if verbose:
+                print(f"Skipping {case_name}: prediction exists at {shorten_path(pred_file)}.")
+            continue
+        remaining_dirs.append(case_dir)
+    return remaining_dirs
+
+def find_preprocessed(case_dirs, output_prepro_dir, incl_rtstructs, output_dir_gts, verbose):
+    if not case_dirs:
+        print(f"No case directories to check.")
+        return []
+
+    remaining_dirs = []
+
+    for case_dir in case_dirs:
+        case_name = case_dir.name
+        ct_path = Path(output_prepro_dir) / f"{case_name}_0000.nii.gz"
+        pt_path = Path(output_prepro_dir) / f"{case_name}_0001.nii.gz"
+
+        if verbose:
+            print(f"[DEBUG] Checking case: {case_name}")
+
+        ct_done, pt_done, gt_done = _already_preprocessed(
+            ct_path, pt_path, output_dir_gts, 
+            case_name, incl_rtstructs, verbose
+        )
+
+        if not (ct_done and pt_done and (not incl_rtstructs or gt_done)):
+            if verbose:
+                print(f"[DEBUG] Case {case_name} is NOT fully preprocessed. Will process.")
+            remaining_dirs.append(case_dir)
+        else:
+            if verbose:
+                print(f"[DEBUG] Case {case_name} is fully preprocessed. Skipping.")
+
+    return remaining_dirs
+
+def _handle_existing_nifti_files(nii_files, output_prepro_dir, 
+                                    overwrite):
+    case_dict = defaultdict(list)
+    print(f"Existing NIfTI files found. Collating and using these directly for inference.")
+
+    for f in nii_files:
+        base = f.stem.rsplit('_000', 1)[0]
+        nii_path = Path(output_prepro_dir) / f"{base}.nii.gz"
+        if nii_path.exists() and not overwrite:
+            print(f"Skipping {base}: pre-processed NIfTI already exists at {shorten_path(nii_path)}.")
+            continue
+        case_dict[base].append(str(f))
+
+    list_of_lists = [sorted(files) for files in case_dict.values()]
+    if not list_of_lists:
+        print(f"All NIfTIs already exist in {output_prepro_dir}. Nothing to process.")
+    return list_of_lists
+
+def _handle_dicom_data(case_dirs,
+                        # input_path, 
+                        output_prepro_dir,
+                        incl_rtstructs, output_dir_structs, output_dir_gts, 
+                        verbose, overwrite, delete_structs_dir):
+    # Make dir to store pre-processed NIfTIs in
+    os.makedirs(output_prepro_dir, exist_ok=True)
     case_dict = defaultdict(list)
 
-    nii_files = list(input_dir.rglob("*.nii.gz"))
-    if nii_files:
-        # Already in NIfTI format
-        print(f"Existing NIfTI files found in {input_dir}. Using these files directly for inference.")
-        for f in nii_files:
-            base = f.stem.rsplit('_000', 1)[0]
-            seg_path = f"{output_seg_dir}/{base}.nii.gz"
-            if Path(seg_path).exists() and not overwrite:
-                print(f"Skipping {base}: segmentation already exists at {shorten_path(seg_path)}.")
-                continue
-            case_dict[base].append(str(f))
-        list_of_lists = [sorted(files) for files in case_dict.values()]
-        if not list_of_lists:
-            print(f"All segmentations already exist in {output_seg_dir}. Nothing to process.")
-        return list_of_lists
-    
-    elif any(f.suffix == '.dcm' for f in input_dir.rglob('*')):
-        # Otherwise process DICOM
-        print(f"DICOM files detected in {input_dir}. Converting to NIfTI format.")
-        output_dir = input_dir.parent / f"{input_dir.name}_preprocessed"
-        output_dir.mkdir(parents=True, exist_ok=True)
+    # case_dirs = [d for d in input_path.iterdir() if d.is_dir()]
 
-        if incl_rtstructs:
-            output_dir_structs = input_dir.parent / f"{input_dir.name}_gt_segmentations"
-            output_dir_structs.mkdir(parents=True, exist_ok=True)
+    for case_dir in tqdm(case_dirs, desc="Pre-processing cases"):
+        case_name = case_dir.name
+        if verbose:
+            print("="*60)
+            print(f"\n\nCase: {case_name}")
+            print("="*60)
 
-        case_dirs = [d for d in input_dir.iterdir() if d.is_dir()]
-        for case_dir in tqdm(case_dirs, desc="Pre-processing cases"):
-            # Set case_name to the directory name
-            case_name = case_dir.name
-            if verbose:
-                print(f"\nCase: {case_name}")
-
-            seg_path = f"{output_seg_dir}/{case_name}.nii.gz"
-            if Path(seg_path).exists() and not overwrite:
-                print(f"Skipping {case_name}: segmentation already exists.")
+        for study_dir in case_dir.iterdir():
+            if not study_dir.is_dir():
                 continue
 
-            # Early skip if both CT and PET outputs exist
-            ct_nifti_path = output_dir / f"{case_name}_0000.nii.gz"
-            pt_nifti_path = output_dir / f"{case_name}_0001.nii.gz"
-            output_dir_struct = output_dir_structs / case_name if incl_rtstructs else None
+            dicom_series = get_modality_dirs_and_validate_pet(study_dir)
+            if dicom_series is None:  # the study failed the check
+                # Error message already printed in get_modality_dirs_and_validate_pet
+                continue
 
-            if ct_nifti_path.exists() and pt_nifti_path.exists() and not overwrite:
-                if incl_rtstructs:
-                    if output_dir_struct.exists() and any(output_dir_struct.glob("*.nii.gz")):
-                        print(f"Skipping {case_name} (preprocessed CT, PET, and RTSTRUCTs found).")
-                        case_dict[case_name].extend([str(ct_nifti_path), str(pt_nifti_path)])
-                        continue
-                    else:
-                        print(f"Skipping {case_name} (preprocessed CT and PET found) but no pre-processed RTSTRUCTs found.")
-                        case_dict[case_name].extend([str(ct_nifti_path), str(pt_nifti_path)])
-                        continue
-                else:
-                    print(f"Skipping {case_name} (preprocessed CT and PET found).")
-                    case_dict[case_name].extend([str(ct_nifti_path), str(pt_nifti_path)])
-                    continue
-            elif ct_nifti_path.exists() and pt_nifti_path.exists() and overwrite:
-                print(f"Overwriting preprocessed files for {case_name}.")
+            ct_path, pt_path = Path(f"{output_prepro_dir}/{case_name}_0000.nii.gz"), Path(f"{output_prepro_dir}/{case_name}_0001.nii.gz")
+            # Regardless of further processing, add paths to case_dict for later inference
 
-            for study_dir in case_dir.iterdir():
-                sizes = {}
-                if not study_dir.is_dir():
-                    continue
+            ct_done, pt_done, gt_done = _already_preprocessed(ct_path, pt_path, output_dir_gts, 
+                                                                    case_name, incl_rtstructs, verbose)
 
-                dicom_series = get_modality_dirs_and_validate_pet(study_dir)
-                if not dicom_series: # the study failed the check
-                    continue
+            # Skip if all required parts are done
+            if (not overwrite) and (ct_done and pt_done and (not incl_rtstructs or gt_done)):
+                print(f"Skipping {case_name} (preprocessed CT, PET{', GT' if incl_rtstructs else ''} found).") #at {shorten_path(output_prepro_dir)}).")
+                # Add preprocessed paths to case_dict
+                case_dict[case_name].extend([str(ct_path), str(pt_path)])
+                continue
 
-                for modality in dicom_series.keys():
-                    dicom_dir, ds = dicom_series[modality]
-                    is_pet = False
-                    
-                    if modality in ['CT', 'PT']:
-                        if modality == 'CT':
-                            nifti_path = ct_nifti_path
-                        else:
-                            nifti_path = pt_nifti_path
-                            is_pet = True
-                        print(f"Found {modality} DICOM series in {shorten_path(dicom_dir)}, converting to NIfTI.")
+            sizes = {}
 
-                        vol_size = dicom_to_nifti(dicom_dir, nifti_path, 
-                                                    is_pet, ds)
-                        case_dict[case_name].append(str(nifti_path))
-                        sizes[modality] = vol_size
-                    
-                    elif modality == 'RTSTRUCT':
-                        dcm_rt_file = next(dicom_dir.glob("*.dcm"), None)
-                        if incl_rtstructs:
-                            # Convert RTSTRUCT to NIfTI
-                            output_dir_struct = output_dir_structs / case_name
-                            os.makedirs(output_dir_struct, exist_ok=True)
-                            if dcm_rt_file is None:
-                                print(f"No RTSTRUCT DICOM file found in {shorten_path(dcm_rt_file)}, skipping ground truth pre-processing for this case.")
-                                continue
-                            convert_rtstruct(dcm_img=dicom_dir, 
-                                                dcm_rt_file=dcm_rt_file, 
-                                                # prefix=case_name,
-                                                output_dir=output_dir_struct)
-                            print(f"{modality} converted to NIfTI masks saved at {shorten_path(output_dir_struct)}")
-                        else:
-                            print(f"RTSTRUCT found in {shorten_path(dcm_rt_file)}, but RTSTRUCT pre-processing is disabled. Skipping.")
-                    else:
-                        print(f"Unsupported modality: {modality} in {shorten_path(study_dir)}. Skipping.") # how'd this modality get in here?!?
+            if 'CT' in dicom_series and not ct_done:
+                process_dicom(dicom_series, 'CT', ct_path, sizes)
 
-                if sizes['CT'] != sizes['PT']:
-                    if verbose:
-                        print(f"CT and PET sizes ({sizes['CT']} | {sizes['PT']}) do not match for {case_name}. Resampling required.")
-                    # Load output nifti files for case and check if resampling required
-                    ct_path = next(p for p in case_dict[case_name] if "_0000" in p)
-                    pet_path = next(p for p in case_dict[case_name] if "_0001" in p)
+            if 'PT' in dicom_series and not pt_done:
+                process_dicom(dicom_series, 'PT', pt_path, sizes)
 
-                    ct_img = sitk.ReadImage(ct_path)
-                    pet_img = sitk.ReadImage(pet_path)
+            if incl_rtstructs and not gt_done: # and 'RTSTRUCT' in dicom_series
+                _process_rtstruct(dicom_series, study_dir, case_name, 
+                                    output_dir_structs, output_dir_gts, verbose)
 
-                    resampled_ct = sitk.Resample(ct_img, pet_img)
-                        
-                    sitk.WriteImage(resampled_ct, str(ct_path))
-                    if verbose:
-                        print(f"Saved NIfTI CT path: {shorten_path(ct_path)}")
-                        print(f"Saved NIfTI PET path: {shorten_path(pet_path)}")
+            if 'CT' in sizes and 'PT' in sizes and sizes['CT'] != sizes['PT']:
+                if verbose:
+                    print(f"CT and PET sizes ({sizes['CT']} | {sizes['PT']}) do not match for {case_name}. Resampling required.")
+                _resample_ct_to_pet(ct_path, pt_path, verbose)
 
-        list_of_lists = [sorted(files) for files in case_dict.values()]
-        if not list_of_lists:
-            print(f"All segmentations already exist in {output_seg_dir}. Nothing to process.")
-        return list_of_lists
+            # Add preprocessed paths to case_dict - CURRENTLY ASSUMES ONE STUDY PER CASE
+            case_dict[case_name].extend([str(ct_path), str(pt_path)])
+
+    # Optionally delete the intermediate output_dir_struct
+    if delete_structs_dir:
+        shutil.rmtree(output_dir_structs)
+        if verbose:
+            print(f"Deleted intermediate RTSTRUCT output directory {shorten_path(output_dir_structs)}")
+
+    list_of_lists = [sorted(files) for files in case_dict.values()]
+    if not list_of_lists:
+        print(f"No valid PET/CT files collated from filtered case_dirs. Nothing to process.")
+    return list_of_lists
+
+def _already_preprocessed(ct_path, pt_path, output_dir_gts, 
+                            case_name, incl_rtstructs, verbose=False):
+    ct_done = ct_path.exists()
+    pt_done = pt_path.exists()
+    gt_done = False
+
+    if incl_rtstructs:
+        gt_file = output_dir_gts / f"{case_name}.nii.gz"
+        gt_done = gt_file.exists() #and any(gt_dir.glob("*.nii.gz"))
+        if verbose:
+            print(f"Checking GT at {shorten_path(gt_file)}: exists={gt_file.exists()}, files_found={gt_done}")
+
+    if verbose:
+        print(f"Preprocessing check for {case_name}: CT={ct_done}, PT={pt_done}, GT={gt_done}")
+
+    return ct_done, pt_done, gt_done
+
+def _process_rtstruct(dicom_series, study_dir, case_name,
+                        output_dir_structs, output_dir_gts,
+                        verbose=False
+                        ):
+    ct_dir = dicom_series['CT'][0]
+    ct_dcm = next(ct_dir.glob("*.dcm"), None)
+    output_dir_struct = output_dir_structs / case_name
+    os.makedirs(output_dir_struct, exist_ok=True)
+
+    rtstruct_dirs = dicom_series.get('RTSTRUCT', [])
+    rt_dcm = next(rtstruct_dirs[0].glob("*.dcm"), None) if rtstruct_dirs else None
     
-    else:
-        raise ValueError(f"No valid NIfTI or DICOM files found in {input_dir}.")    
+    if not rt_dcm:
+        print(f"No RTSTRUCT DICOM file found in {shorten_path(study_dir)}. Creating empty GT mask instead.")
+
+        # Load full CT series for shape and metadata
+        reader = sitk.ImageSeriesReader()
+        series_file_names = reader.GetGDCMSeriesFileNames(str(ct_dir))
+        reader.SetFileNames(series_file_names)
+        ct_image = reader.Execute()
+
+        empty_mask = sitk.Image(ct_image.GetSize(), sitk.sitkUInt8)
+        empty_mask.CopyInformation(ct_image)
+
+        empty_mask_path = output_dir_gts / f"{case_name}.nii.gz"
+        sitk.WriteImage(empty_mask, str(empty_mask_path))
+
+        if verbose:
+            print(f"Empty GT mask saved at {shorten_path(empty_mask_path)} with shape {ct_image.GetSize()}")
+        return
+    
+    if verbose:
+        print(f"For RTSTRUCT conversion, using CT from {shorten_path(ct_dcm)} and RTSTRUCT from {shorten_path(rt_dcm)}")
+
+    plastimatch_rtstruct_to_nifti(
+        ct_dcm=ct_dcm,
+        rt_dcm=rt_dcm,
+        output_dir_struct=output_dir_struct,
+        rename_map=None
+    )
+
+    # Extract total_tumor_burden mask
+    gt_files = list(output_dir_struct.glob("*total_tumor_burden*.nii.gz"))
+    if not gt_files:
+        print(f"Warning: No total_tumor_burden mask found for {case_name}")
+        return
+    if len(gt_files) > 1:
+        print(f"Warning: Multiple total_tumor_burden masks found for {case_name}. Using the first one.")
+
+    # output_dir_ttb.mkdir(exist_ok=True, parents=True)
+    gt_dest = output_dir_gts / f"{case_name}.nii.gz"
+    shutil.copy(gt_files[0], gt_dest)
+
+    if verbose:
+        print(f"Copied GT mask {gt_files[0].name} to {shorten_path(gt_dest)}")
+
+def _resample_ct_to_pet(ct_path, pt_path, verbose):
+    ct_img = sitk.ReadImage(ct_path)
+    pt_img = sitk.ReadImage(pt_path)
+    resampled_ct = sitk.Resample(ct_img, pt_img)
+    sitk.WriteImage(resampled_ct, ct_path)
+
+    # Confirm resampling
+    resampled_ct = sitk.ReadImage(ct_path)
+    if resampled_ct.GetSize() != pt_img.GetSize():
+        raise RuntimeError(f"Resampling CT ({shorten_path(ct_path)}) to PET ({shorten_path(pt_path)}) failed: CT size {resampled_ct.GetSize()} does not match PET size {pt_img.GetSize()}")
+
+    if verbose:
+        print(f"Resampled CT saved at {shorten_path(ct_path)} with shape {resampled_ct.GetSize()} to match PET shape {pt_img.GetSize()}")
+        print(f"PET path: {shorten_path(pt_path)}")
