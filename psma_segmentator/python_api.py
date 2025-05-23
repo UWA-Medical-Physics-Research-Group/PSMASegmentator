@@ -7,8 +7,8 @@ import requests
 import shutil
 from psma_segmentator.download_weights import download_fold_weights_via_api
 from psma_segmentator.inference import segmentate
-from psma_segmentator.pre_processing import pre_process
-import psma_segmentator.post_processing
+from psma_segmentator.pre_processing import pre_process, shorten_path
+from psma_segmentator.post_processing import post_process
 
 def get_version_data(repo, version, headers):
     """
@@ -68,9 +68,12 @@ def psma_segmentator(weights_dir: str = None,
                         verbose: bool = False,
                         overwrite: bool = False,
                         preprocess_only: bool = False,
+                        postprocess_only: bool = False,
+                        suv_thresh: float = 0.0,
+                        organ_dir: str = None,
                     ):
     """
-    Runs the PSMA segmentation pipeline, including pre-processing and segmentation.
+    Runs the PSMA segmentation pipeline, comprising pre-processing, segmentation, and post-processing.
     
     Args:
         weights_dir (str): Directory containing trained model weights. 
@@ -83,7 +86,12 @@ def psma_segmentator(weights_dir: str = None,
         verbose (bool): Verbosity level.
         overwrite (bool): Whether to overwrite existing files.
         preprocess_only (bool): If True, only pre-process the input files without segmentation.
+        postprocess_only (bool): If True, only post-process the segmentation results.
+        suv_thresh (float): SUV threshold for post-processing.
+        organ_dir (str): Directory containing organ segmentations for post-processing lesion classification.
     """
+    if not os.path.exists(input_dir):
+        raise FileNotFoundError(f"Input directory {input_dir} does not exist.")
     input_path = Path(input_dir)
     
     if incl_rtstructs == True and shutil.which("plastimatch") is None:
@@ -98,8 +106,6 @@ def psma_segmentator(weights_dir: str = None,
     # Create output directory if it doesn't exist
     if not os.path.exists(output_dir) and not preprocess_only:
         os.makedirs(output_dir)
-    if not os.path.exists(input_dir):
-        raise FileNotFoundError(f"Input directory {input_dir} does not exist.")
 
     headers = {
         "Authorization": f"Bearer {token}",
@@ -125,20 +131,39 @@ def psma_segmentator(weights_dir: str = None,
 
     download_fold_weights_via_api(weights_dir, headers, release_data)  # Download model weights if needed
     
-    # Preprocess the input files
-    output_prepro_dir = str(input_path.parent / f"{input_path.name}_preprocessed")
-    list_of_lists = pre_process(input_path, incl_rtstructs, 
-                                output_prepro_dir, output_pred_dir=output_dir,
-                                verbose=verbose, overwrite=overwrite)
-    if preprocess_only:
-        print("\nPre-processing (only) complete. No segmentation performed.")
-        return
-    
-    segmentate(
-        model_folder=weights_dir,
-        list_of_lists=list_of_lists,
+    if not postprocess_only:
+        # Preprocess the input files
+        list_of_lists, output_prepro_dir = pre_process(input_path, incl_rtstructs, 
+                                                        output_pred_dir=output_dir,
+                                                        verbose=verbose, overwrite=overwrite)
+        if preprocess_only:
+            print("\nPre-processing (only) complete. No segmentation performed.")
+            return
+        
+        segmentate(
+            model_folder=weights_dir,
+            list_of_lists=list_of_lists,
+            output_dir=output_dir,
+            device=device
+        )
+    else:
+        print("\nSkipping pre-processing and segmentation. Only post-processing will be performed.")
+        # Check if output dir is empty (i.e., nothing to post-process)
+        if not os.listdir(output_dir):
+            print(f"\nERROR: Output directory {output_dir} is empty. "
+                "Please run pre-processing and segmentation first.")
+            raise SystemExit(1)
+
+    # Post-process the segmentation results
+    print(f"\nInitiating post-processing of segmentations in {shorten_path(output_dir)}...")
+    post_process(
+        prepro_dir=output_prepro_dir,
         output_dir=output_dir,
-        device=device
+        organ_dir=organ_dir,
+        device=device,
+        suv_thresh=suv_thresh,
+        verbose=verbose,
+        overwrite=overwrite
     )
 
     print("\nPSMA segmentation pipeline complete.")

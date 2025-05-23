@@ -227,70 +227,126 @@ def plastimatch_rtstruct_to_nifti(ct_dcm, rt_dcm, output_dir_struct,
         if original_filename != new_name:
             file.rename(new_path)
 
+def process_dicom(dicom_series, modality, nifti_path, sizes):
+    """
+    Process a DICOM series and convert it to NIfTI format.
+
+    Args:
+        dicom_series (dict): Dictionary containing DICOM series paths.
+        modality (str): Modality type ('CT' or 'PT').
+        nifti_path (str): Path to save the NIfTI file.
+        sizes (dict): Dictionary to store the size of the converted image.
+
+    Returns:
+        None
+    """
+    dicom_dir = dicom_series[modality][0]
+    ds = dicom_series[modality][1]
+    is_pet = modality == "PT"
+    
+    size = dicom_to_nifti(dicom_dir, nifti_path, is_pet, ds)
+    sizes[modality] = size
+
 
 def pre_process(input_path, incl_rtstructs, 
-                output_prepro_dir, output_pred_dir, 
+                output_pred_dir, 
                 verbose, overwrite):
-    case_dirs = [d for d in input_path.iterdir() if d.is_dir()]
-    if not case_dirs:
-        raise ValueError("No case directories found.")
-    
-    output_dir_structs = (input_path.parent / f"{input_path.name}_structs") if incl_rtstructs else None
-    output_dir_gts = (input_path.parent / f"{input_path.name}_gt_segmentations") if incl_rtstructs else None
-    if incl_rtstructs:
-        output_dir_structs.mkdir(parents=True, exist_ok=True)
-        output_dir_gts.mkdir(parents=True, exist_ok=True)
 
-    # Filter to only cases needing prediction
-    if not overwrite:
-        case_dirs_to_predict = find_predicted(case_dirs, output_pred_dir, verbose)
-    else:
-        case_dirs_to_predict = case_dirs
-
-    if not case_dirs_to_predict:
-        print("All cases have existing predictions. Nothing to process.")
-        return []
-
-    # Among cases needing prediction, check which are already preprocessed
-    if not overwrite:
-        preprocessed = find_preprocessed(case_dirs_to_predict, output_prepro_dir, incl_rtstructs, output_dir_gts, verbose)
-    else:
-        preprocessed = []
-
-    preprocessed = preprocessed or []
-    preprocessed_case_names = {Path(p[0]).stem.rsplit("_", 1)[0] for p in preprocessed}  # assumes p[0] is CT path
-    remaining_case_dirs = [cd for cd in case_dirs_to_predict if cd.name not in preprocessed_case_names]
-
-    # Handle DICOM input
     if any(f.suffix == ".dcm" for f in input_path.rglob("*")):
-        newly_processed = _handle_dicom_data(remaining_case_dirs,
-                                                output_prepro_dir, 
-                                                incl_rtstructs, output_dir_structs, output_dir_gts, 
-                                                verbose, overwrite, delete_structs_dir=False)
-        return preprocessed + (newly_processed or [])
+        print(f"Input path {shorten_path(input_path)} contains DICOM files.")
+        handling_dicom = True
+        output_prepro_dir = str(input_path.parent / f"{input_path.name}_preprocessed")
+        os.makedirs(output_prepro_dir, exist_ok=True)
+    else:
+        print(f"Input path {shorten_path(input_path)} contains NIfTI files.")
+        handling_dicom = False
+        output_prepro_dir = str(input_path)
 
-    # Handle NIfTI input
-    nii_files = list(input_path.rglob("*.nii.gz"))
-    if nii_files:
-        newly_processed = _handle_existing_nifti_files(nii_files, output_prepro_dir, overwrite)
-        return preprocessed + (newly_processed or [])
+    case_dirs = [d for d in input_path.iterdir() if d.is_dir()]
+    
+    if case_dirs:
+        print(f"Found case directories in input path, assuming DICOM input.")
+        
+        output_dir_structs = (input_path.parent / f"{input_path.name}_structs") if incl_rtstructs else None
+        output_dir_gts = (input_path.parent / f"{input_path.name}_gt_segmentations") if incl_rtstructs else None
+        if incl_rtstructs:
+            output_dir_structs.mkdir(parents=True, exist_ok=True)
+            output_dir_gts.mkdir(parents=True, exist_ok=True)
+
+        # Filter to only cases needing prediction
+        if not overwrite:
+            case_dirs_to_predict = find_predicted(case_dirs, output_pred_dir, 
+                                                    mode='case_dirs', verbose=verbose)
+        else:
+            case_dirs_to_predict = case_dirs
+
+        if not case_dirs_to_predict:
+            print("All cases have existing predictions. Nothing to process.")
+            return [], output_prepro_dir
+
+        # Among cases needing prediction, check which are already preprocessed
+        if not overwrite:
+            preprocessed = find_preprocessed(case_dirs_to_predict, output_prepro_dir, incl_rtstructs, 
+                                                output_dir_gts, verbose)
+        else:
+            preprocessed = []
+
+        preprocessed = preprocessed or []
+        preprocessed_case_names = {Path(p).stem.rsplit("_", 1)[0] for p in preprocessed}  # assumes p[0] is CT path
+        remaining_case_dirs = [cd for cd in case_dirs_to_predict if cd.name not in preprocessed_case_names]
+
+        # Handle DICOM input
+        if handling_dicom:
+            newly_processed = _handle_dicom_data(remaining_case_dirs,
+                                                    output_prepro_dir, 
+                                                    incl_rtstructs, output_dir_structs, output_dir_gts, 
+                                                    verbose, overwrite, delete_structs_dir=False)
+            return preprocessed + (newly_processed or []), output_prepro_dir
+    else:
+        # Handle NIfTI input
+        nii_files = list(input_path.rglob("*.nii.gz"))
+        nii_files = find_predicted(nii_files, output_pred_dir,
+                                    mode='nii_files', verbose=verbose)
+        if nii_files:
+            newly_processed = _handle_existing_nifti_files(nii_files, output_prepro_dir, 
+                                                            overwrite, verbose)
+            return newly_processed, output_prepro_dir # + preprocessed
+        else:
+            print("All NIfTI output files already exist. Nothing to predict.")
+            return [], output_prepro_dir
 
     raise ValueError(f"No valid NIfTI or DICOM files found in {input_path}.")
 
 
 # Sub-functions
 
-def find_predicted(case_dirs, output_pred_dir, verbose=False):
-    remaining_dirs = []
-    for case_dir in case_dirs:
-        case_name = case_dir.name
-        pred_file = Path(output_pred_dir) / f"{case_name}.nii.gz"
-        if pred_file.exists():
-            if verbose:
-                print(f"Skipping {case_name}: prediction exists at {shorten_path(pred_file)}.")
-            continue
-        remaining_dirs.append(case_dir)
-    return remaining_dirs
+def find_predicted(input_dir, output_pred_dir, mode, verbose=True):
+    remaining = [] # List of files/directories that need to be processed
+
+    if mode == "case_dirs": # input_dir is case_dirs
+        for case_dir in input_dir:
+            case_name = case_dir.name
+            pred_file = Path(os.path.join(output_pred_dir, f"{case_name}.nii.gz"))
+            if pred_file.exists():
+                if verbose:
+                    print(f"Skipping {case_name}: prediction exists at {shorten_path(pred_file)}.")
+                continue
+            remaining.append(case_dir)
+
+    elif mode == "nii_files":
+        for nii_file in input_dir: # input_dir is nii_files
+            case_name = os.path.basename(nii_file).split("_000")[0]
+            pred_file = Path(os.path.join(output_pred_dir, f"{case_name}.nii.gz"))
+            if pred_file.exists():
+                if verbose:
+                    print(f"Skipping {case_name}: prediction exists at {shorten_path(pred_file)}.")
+                continue
+            else:
+                if verbose:
+                    print(f"Processing {case_name}: prediction does not exist at {shorten_path(pred_file)}.")
+            remaining.append(nii_file)
+
+    return remaining
 
 def find_preprocessed(case_dirs, output_prepro_dir, incl_rtstructs, output_dir_gts, verbose):
     if not case_dirs:
@@ -323,13 +379,30 @@ def find_preprocessed(case_dirs, output_prepro_dir, incl_rtstructs, output_dir_g
     return remaining_dirs
 
 def _handle_existing_nifti_files(nii_files, output_prepro_dir, 
-                                    overwrite):
+                                    overwrite, verbose):
     case_dict = defaultdict(list)
     print(f"Existing NIfTI files found. Collating and using these directly for inference.")
 
     for f in nii_files:
+        print(f"Processing {shorten_path(f)}")
         base = f.stem.rsplit('_000', 1)[0]
         nii_path = Path(output_prepro_dir) / f"{base}.nii.gz"
+
+        # Check if ct and pet niftis exist and are the same size
+        ct_path = Path(output_prepro_dir) / f"{base}_0000.nii.gz"
+        pt_path = Path(output_prepro_dir) / f"{base}_0001.nii.gz"
+
+        if ct_path.exists() and pt_path.exists():
+            ct_img = sitk.ReadImage(str(ct_path))
+            pt_img = sitk.ReadImage(str(pt_path))
+            if ct_img.GetSize() != pt_img.GetSize():
+                if verbose:
+                    print(f"CT and PET sizes ({ct_img.GetSize()} | {pt_img.GetSize()}) do not match for {base}. Resampling required.")
+                _resample_ct_to_pet(ct_path, pt_path, verbose=True)
+        else:
+            print(f"CT and/or PET NIfTI files not found for {base}. Skipping.")
+            continue
+
         if nii_path.exists() and not overwrite:
             print(f"Skipping {base}: pre-processed NIfTI already exists at {shorten_path(nii_path)}.")
             continue
@@ -337,7 +410,7 @@ def _handle_existing_nifti_files(nii_files, output_prepro_dir,
 
     list_of_lists = [sorted(files) for files in case_dict.values()]
     if not list_of_lists:
-        print(f"All NIfTIs already exist in {output_prepro_dir}. Nothing to process.")
+        print(f"All pre-processed NIfTIs already exist in {output_prepro_dir}. Nothing to process.")
     return list_of_lists
 
 def _handle_dicom_data(case_dirs,

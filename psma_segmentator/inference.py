@@ -43,7 +43,7 @@ def segmentate(model_folder, list_of_lists, output_dir,
 
     # Run nnUNet inference on the entire preprocessed directory
     print(f"\nRunning prediction on {list_of_lists}...")
-    print(f"Output directory: {output_dir}")
+    print(f"Saving predictions to output directory: {output_dir}")
     predictor.predict_from_files(
         list_of_lists_or_source_folder=list_of_lists,
         output_folder_or_list_of_truncated_output_files=output_dir,

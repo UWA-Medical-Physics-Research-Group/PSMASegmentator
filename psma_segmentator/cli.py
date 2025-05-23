@@ -11,7 +11,7 @@ def main():
     )
     parser.add_argument(
         "-o", "--output_dir", required=False, default=None,
-        help="Directory to save segmentation results. Defaults to .../input_dir.parent/outputs."
+        help="Directory to save segmentation results. Defaults to .../input_dir.parent/input_dir.name_outputs."
     )
     parser.add_argument(
         "-pat", "--personal_access_token", required = True, 
@@ -41,6 +41,18 @@ def main():
         "-ppo", "--preprocess_only", required=False, action="store_true",
         help="Pre-process the input files only. No segmentation will be performed."
     )
+    parser.add_argument(
+        "-pso", "--postprocess_only", required=False, action="store_true",
+        help="Post-process the (expected) output files only. No pre-processing or segmentation will be performed."
+    )
+    parser.add_argument(
+        "-suv", "--suv_threshold", required=False, type=float, default=0.0,
+        help="Specify SUV threshold to apply to segmentation outputs. Defaults to 0."
+    )
+    parser.add_argument(
+        "-or", "--organ_dir", required=False, default=None,
+        help="Directory containing organ segmentations for post-processing lesion classification. Defaults to .../output_dir.parent/organ_segmentations."
+    )
 
     args = parser.parse_args()
 
@@ -54,6 +66,9 @@ def main():
                 verbose = args.verbose,
                 overwrite = args.overwrite,
                 preprocess_only = args.preprocess_only,
+                postprocess_only = args.postprocess_only,
+                suv_thresh = args.suv_threshold,
+                organ_dir = args.organ_dir
             )
 
 if __name__ == "__main__":
