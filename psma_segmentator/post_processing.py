@@ -357,23 +357,51 @@ def expand_segmentation(predicted_image, pet_image,
 
 ## Generate organ segmentations using TotalSegmentator ##
 def generate_organ_segmentations(prepro_dir, output_segs_dir, 
-                                    device):
+                                    device, verbose):
     if device == 'cuda':
-        device = 'gpu' # update to 'gpu' for compatibility with TotalSegmentator
+        device = 'gpu'  # update to 'gpu' for compatibility with TotalSegmentator
 
     cases = [case for case in os.listdir(prepro_dir) if case.endswith("0000.nii.gz")]
 
     for case in cases:
+        case_base = case.replace("_0000.nii.gz", "")
         case_path = os.path.join(prepro_dir, case)
-        out_path_total = os.path.join(output_segs_dir, case.split("_0000")[0] + "_total.nii.gz")
+        out_path_total = os.path.join(output_segs_dir, f"{case_base}_total.nii.gz")
 
-        # Check if the output files already exist
+        # Check for existing *_total output
         if os.path.exists(out_path_total):
             print(f"Organ segmentation already exists for {shorten_path(case_path)} at {shorten_path(out_path_total)}. Skipping.")
             continue
         else:
-            print(f"Processing: {case_path}")
+            if verbose:
+                print(f"Saving organ segmentation for {shorten_path(case_path)} to {shorten_path(out_path_total)}")
 
+        # Look for any existing seg for this case
+        matching_segs = [f for f in os.listdir(output_segs_dir) if f.startswith(case_base) and f.endswith(".nii.gz")]
+        valid_total_found = False
+
+        for seg_file in matching_segs:
+            if "_total" not in seg_file:
+                seg_path = os.path.join(output_segs_dir, seg_file)
+                try:
+                    seg_img = nib.load(seg_path)
+                    seg_data = seg_img.get_fdata()
+                    unique_labels = np.unique(seg_data)
+                    if (len(unique_labels) == 117) or (unique_labels.max() == 117):
+                        # This is a total segmentation, but misnamed
+                        new_path = os.path.join(output_segs_dir, f"{case_base}_total.nii.gz")
+                        os.rename(seg_path, new_path)
+                        print(f"Found valid TotalSegmentator output for {case_base} without _total suffix. Renamed to: {shorten_path(new_path)}")
+                        valid_total_found = True
+                        break  # No need to generate again
+                except Exception as e:
+                    print(f"Could not check file {seg_path}: {e}")
+
+        if valid_total_found:
+            continue
+
+        # Otherwise, run TotalSegmentator
+        print(f"Processing: {case_path}")
         command = f"TotalSegmentator -i '{case_path}' -o '{out_path_total}' --ta total --ml -d {device} --fast"
         os.system(command)
 
@@ -804,7 +832,7 @@ def post_process(
     else:
         logging.info(f"No SUV thresholding applied (threshold = {suv_thresh}) to segmentation outputs.")
         lesion_results_json = "lesion_results.json"
-
+    
     if organ_dir is None:
         organ_dir = os.path.join(os.path.dirname(output_dir), "organ_segmentations")
         os.makedirs(organ_dir, exist_ok=True)
@@ -813,7 +841,13 @@ def post_process(
         logging.info(f"Using organ segmentations from {shorten_path(organ_dir)}")
 
     # Generate organ segmentations
-    generate_organ_segmentations(prepro_dir, organ_dir, device)
+    generate_organ_segmentations(prepro_dir, organ_dir, 
+                                    device, verbose)
+
+    lesion_results_json_path = os.path.join(Path(output_dir).parent, lesion_results_json)
+    if not overwrite and os.path.exists(lesion_results_json_path):
+        logging.info(f"Lesion results JSON already exists at {shorten_path(lesion_results_json_path)} and overwrite is False. Skipping lesion classification and metrics extraction.")
+        return 
 
     # Classify lesions (using generated organ segs) and extract biomarkers
     lesion_results_dict = lesion_classifier(
@@ -828,7 +862,8 @@ def post_process(
 
     lesion_results_dict["SUV_threshold"] = suv_thresh
 
-    lesion_results_json_path = os.path.join(Path(output_dir).parent, lesion_results_json)
     with open(lesion_results_json_path, 'w') as f:
         json.dump(lesion_results_dict, f, indent=4)
     logging.info(f"Saved lesion classification and metrics json to {lesion_results_json_path}")
+
+    return

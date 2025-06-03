@@ -5,7 +5,6 @@ import numpy as np
 from tqdm import tqdm
 import SimpleITK as sitk
 import torch
-import pydicom
 import multiprocessing
 import pydicom
 from datetime import datetime
