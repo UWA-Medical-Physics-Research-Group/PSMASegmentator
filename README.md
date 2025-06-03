@@ -18,9 +18,17 @@ It is recommended to use a [Miniconda](https://docs.conda.io/en/latest/miniconda
 conda create -n psma_segmentator python=3.10 -y
 conda activate psma_segmentator
 ```
-Then clone the repository and install in editable mode:
+
+Then, clone the repository:
+
 ```bash
-cd ~/Path/to/PSMASegmentator
+git clone https://github.com/UWA-Medical-Physics-Research-Group/PSMASegmentator /path/to/where/you/want/PSMASegmentator
+```
+
+And install in editable mode:
+
+```bash
+cd path/to/where/you/put/PSMASegmentator
 pip install -e .
 ```
 
