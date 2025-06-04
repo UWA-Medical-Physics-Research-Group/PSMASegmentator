@@ -7,7 +7,7 @@ name = "psma_segmentator"
 version = "0.0.2"
 description = "PSMA PET Auto-Segmentation Tool"
 readme = "README.md"
-requires-python = ">=3.8"
+requires-python = ">=3.11"
 license = { file = "LICENSE" }
 authors = [
     { name = "Jake Kendrick", email = "jake.kendrick@uwa.edu.au" },
