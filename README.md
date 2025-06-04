@@ -25,7 +25,7 @@ Then, clone the repository:
 git clone https://github.com/UWA-Medical-Physics-Research-Group/PSMASegmentator /path/to/where/you/want/PSMASegmentator
 ```
 
-And install in editable mode:
+And move to the cloned repo location before installing in editable mode:
 
 ```bash
 cd path/to/where/you/put/PSMASegmentator

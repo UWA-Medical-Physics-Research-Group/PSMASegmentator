@@ -38,3 +38,6 @@ psma_segmentator = "psma_segmentator.cli:main"
 "Homepage" = "https://github.com/yourusername/psma_segmentator"
 "Repository" = "https://github.com/yourusername/psma_segmentator"
 "Bug Tracker" = "https://github.com/yourusername/psma_segmentator/issues"
+
+[tool.setuptools]
+packages = ["psma_segmentator", "nnunetv2"]
