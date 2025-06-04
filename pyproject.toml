@@ -10,7 +10,7 @@ readme = "README.md"
 requires-python = ">=3.8"
 license = { file = "LICENSE" }
 authors = [
-    { name = "Jake Kendrick", email = "jake.kendrick@uwa.edu.au" }
+    { name = "Jake Kendrick", email = "jake.kendrick@uwa.edu.au" },
     { name = "Joel Noble, email = "joel.noble@uwa.edu.au" } 
 ]
 dependencies = [
