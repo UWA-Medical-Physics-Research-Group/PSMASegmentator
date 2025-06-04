@@ -144,7 +144,8 @@ def psma_segmentator(weights_dir: str = None,
             model_folder=weights_dir,
             list_of_lists=list_of_lists,
             output_dir=output_dir,
-            device=device
+            device=device,
+            verbose=verbose
         )
     else:
         print("\nSkipping pre-processing and segmentation. Only post-processing will be performed.")

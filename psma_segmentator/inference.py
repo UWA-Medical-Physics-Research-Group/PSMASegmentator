@@ -13,7 +13,7 @@ from nnunetv2.inference.predict_from_raw_data import nnUNetPredictor
 
 
 def segmentate(model_folder, list_of_lists, output_dir, 
-                device, step_size=0.5, use_tta=False, verbose=False):
+                device, verbose, step_size=0.5, use_tta=False):
     """
     Runs inference using nnUNet for all cases in the preprocessed directory.
     """
@@ -22,9 +22,11 @@ def segmentate(model_folder, list_of_lists, output_dir,
     if device == 'cpu':
         torch.set_num_threads(multiprocessing.cpu_count())
         device = torch.device('cpu')
+        perform_everything_on_device = False
     elif device == 'cuda':
         torch.set_num_threads(1)
         device = torch.device('cuda')
+        perform_everything_on_device = True
     else:
         device = torch.device('mps')
 
@@ -33,7 +35,7 @@ def segmentate(model_folder, list_of_lists, output_dir,
         tile_step_size=step_size,
         use_gaussian=True,
         use_mirroring=use_tta,
-        perform_everything_on_device=True, 
+        perform_everything_on_device=perform_everything_on_device, 
         device=device,
         verbose=verbose,
         allow_tqdm=True

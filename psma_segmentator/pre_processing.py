@@ -305,14 +305,15 @@ def pre_process(input_path, incl_rtstructs,
     else:
         # Handle NIfTI input
         nii_files = list(input_path.rglob("*.nii.gz"))
-        nii_files = find_predicted(nii_files, output_pred_dir,
-                                    mode='nii_files', verbose=verbose)
+        if not overwrite: # only check for predicted NIfTI files if not overwriting
+            nii_files = find_predicted(nii_files, output_pred_dir,
+                                        mode='nii_files', verbose=verbose)
         if nii_files:
             newly_processed = _handle_existing_nifti_files(nii_files, output_prepro_dir, 
                                                             overwrite, verbose)
             return newly_processed, output_prepro_dir # + preprocessed
         else:
-            print("All NIfTI output files already exist. Nothing to predict.")
+            print("All NIfTI output files already exist and/or overwrite = False. Nothing to predict.")
             return [], output_prepro_dir
 
     raise ValueError(f"No valid NIfTI or DICOM files found in {input_path}.")
@@ -359,9 +360,6 @@ def find_preprocessed(case_dirs, output_prepro_dir, incl_rtstructs, output_dir_g
         case_name = case_dir.name
         ct_path = Path(output_prepro_dir) / f"{case_name}_0000.nii.gz"
         pt_path = Path(output_prepro_dir) / f"{case_name}_0001.nii.gz"
-
-        if verbose:
-            print(f"[DEBUG] Checking case: {case_name}")
 
         ct_done, pt_done, gt_done = _already_preprocessed(
             ct_path, pt_path, output_dir_gts, 
