@@ -12,8 +12,12 @@ import math
 from nnunetv2.inference.predict_from_raw_data import nnUNetPredictor
 
 
-def segmentate(model_folder, list_of_lists, output_dir, 
-                device, verbose, step_size=0.5, use_tta=False):
+def segmentate(model_folder, list_of_lists, 
+                output_dir, 
+                device, 
+                use_tta,
+                verbose, 
+                step_size=0.5):
     """
     Runs inference using nnUNet for all cases in the preprocessed directory.
     """

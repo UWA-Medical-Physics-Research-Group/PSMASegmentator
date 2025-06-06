@@ -53,6 +53,10 @@ def main():
         "-or", "--organ_dir", required=False, default=None,
         help="Directory containing organ segmentations for post-processing lesion classification. Defaults to .../output_dir.parent/organ_segmentations."
     )
+    parser.add_argument(
+        "--fast", required=False, action="store_true",
+        help="Use fast mode for inference. This disables Test-Time Augmentation (TTA), and uses the --fast flag in TotalSegmentator for faster organ segmentation generation."
+    )
 
     args = parser.parse_args()
 
@@ -68,7 +72,8 @@ def main():
                 preprocess_only = args.preprocess_only,
                 postprocess_only = args.postprocess_only,
                 suv_thresh = args.suv_threshold,
-                organ_dir = args.organ_dir
+                organ_dir = args.organ_dir,
+                fast = args.fast
             )
 
 if __name__ == "__main__":

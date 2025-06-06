@@ -12,14 +12,17 @@ It supports both DICOM and NIfTI inputs and automatically handles pre-processing
 
 ## Installation
 
-It is recommended to use a [Miniconda](https://docs.conda.io/en/latest/miniconda.html) virtual environment.
+It is recommended to use a [Miniconda](https://docs.conda.io/en/latest/miniconda.html) virtual environment. Once you've [installed Miniconda](https://www.anaconda.com/docs/getting-started/miniconda/install#quickstart-install-instructions):
 
 ```bash
-conda create -n psma_segmentator python=3.10 -y
+conda create -n psma_segmentator python=3.11 -y
 conda activate psma_segmentator
 ```
 
-Then, clone the repository:
+Then, clone the repository. As this repo is currently private, you will need a Personal Access Token (PAT) to clone the repo and use the API. To generate a PAT, click [here](https://github.com/settings/tokens) then select **Generate new token --> Classic** and give it 'repo' scope. 
+
+
+Once you have your PAT, use it and your GitHub username to clone the repo, as shown below:
 
 ```bash
 git clone https://github.com/UWA-Medical-Physics-Research-Group/PSMASegmentator /path/to/where/you/want/PSMASegmentator
@@ -80,6 +83,10 @@ python -m psma_segmentator.cli -i INPUT_DIR -pat YOUR_TOKEN [options]
 - `-or`, `--organ_dir`  
     Path to directory containing organ segmentation masks for lesion classification.  
     **Default:** `.../output_dir.parent/organ_segmentations`
+
+- `--fast`
+    Uses 'fast' mode for inference. This disables Test-Time Augmentation (TTA), and uses the --fast flag in TotalSegmentator for faster organ segmentation generation.
+
 
 ---
 

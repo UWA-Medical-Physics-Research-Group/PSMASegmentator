@@ -71,6 +71,7 @@ def psma_segmentator(weights_dir: str = None,
                         postprocess_only: bool = False,
                         suv_thresh: float = 0.0,
                         organ_dir: str = None,
+                        fast: bool = False
                     ):
     """
     Runs the PSMA segmentation pipeline, comprising pre-processing, segmentation, and post-processing.
@@ -89,6 +90,7 @@ def psma_segmentator(weights_dir: str = None,
         postprocess_only (bool): If True, only post-process the segmentation results.
         suv_thresh (float): SUV threshold for post-processing.
         organ_dir (str): Directory containing organ segmentations for post-processing lesion classification.
+        fast (bool): If True, uses fast mode for inference, disabling TTA and using fast organ segmentation.
     """
     if not os.path.exists(input_dir):
         raise FileNotFoundError(f"Input directory {input_dir} does not exist.")
@@ -139,12 +141,13 @@ def psma_segmentator(weights_dir: str = None,
         if preprocess_only:
             print("\nPre-processing (only) complete. No segmentation performed.")
             return
-        
+                
         segmentate(
             model_folder=weights_dir,
             list_of_lists=list_of_lists,
             output_dir=output_dir,
             device=device,
+            use_tta=not fast,  # Use TTA unless fast mode is specified 
             verbose=verbose
         )
     else:
@@ -163,6 +166,7 @@ def psma_segmentator(weights_dir: str = None,
         organ_dir=organ_dir,
         device=device,
         suv_thresh=suv_thresh,
+        fast=fast,
         verbose=verbose,
         overwrite=overwrite
     )

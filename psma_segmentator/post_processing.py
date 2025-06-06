@@ -357,7 +357,9 @@ def expand_segmentation(predicted_image, pet_image,
 
 ## Generate organ segmentations using TotalSegmentator ##
 def generate_organ_segmentations(prepro_dir, output_segs_dir, 
-                                    device, verbose):
+                                    device, 
+                                    fast,
+                                    verbose):
     if device == 'cuda':
         device = 'gpu'  # update to 'gpu' for compatibility with TotalSegmentator
 
@@ -402,7 +404,11 @@ def generate_organ_segmentations(prepro_dir, output_segs_dir,
 
         # Otherwise, run TotalSegmentator
         print(f"Processing: {case_path}")
-        command = f"TotalSegmentator -i '{case_path}' -o '{out_path_total}' --ta total --ml -d {device} --fast"
+        command = f"TotalSegmentator -i '{case_path}' -o '{out_path_total}' --ta total --ml -d {device}"
+        if fast:
+            command += " --fast"
+            if verbose:
+                print("Running TotalSegmentator in 'fast' mode.")
         os.system(command)
 
 
@@ -819,6 +825,7 @@ def post_process(
         organ_dir, # location of organ segmentations
         device,
         suv_thresh,
+        fast,
         verbose,
         overwrite
     ):
@@ -842,7 +849,9 @@ def post_process(
 
     # Generate organ segmentations
     generate_organ_segmentations(prepro_dir, organ_dir, 
-                                    device, verbose)
+                                    device,
+                                    fast, 
+                                    verbose)
 
     lesion_results_json_path = os.path.join(Path(output_dir).parent, lesion_results_json)
     if not overwrite and os.path.exists(lesion_results_json_path):
