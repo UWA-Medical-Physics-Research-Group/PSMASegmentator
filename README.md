@@ -25,10 +25,10 @@ Then, clone the repository. As this repo is currently private, you will need a P
 Once you have your PAT, use it and your GitHub username to clone the repo, as shown below:
 
 ```bash
-git clone https://github.com/UWA-Medical-Physics-Research-Group/PSMASegmentator /path/to/where/you/want/PSMASegmentator
+git clone https://<your-username>:<your-PAT>@github.com/UWA-Medical-Physics-Research-Group/PSMASegmentator /path/to/where/you/want/PSMASegmentator
 ```
 
-And move to the cloned repo location before installing in editable mode:
+Then move to the cloned repo location before installing in editable mode:
 
 ```bash
 cd path/to/where/you/put/PSMASegmentator
