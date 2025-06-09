@@ -286,22 +286,21 @@ def pre_process(input_path, incl_rtstructs,
 
         # Among cases needing prediction, check which are already preprocessed
         if not overwrite:
-            preprocessed = find_preprocessed(case_dirs_to_predict, output_prepro_dir, incl_rtstructs, 
-                                                output_dir_gts, verbose)
+            not_preprocessed, already_preprocessed = find_preprocessed(case_dirs_to_predict, output_prepro_dir, incl_rtstructs, 
+                                                                        output_dir_gts, verbose)
         else:
-            preprocessed = []
+            not_preprocessed = case_dirs_to_predict # If overwriting, all are considered not preprocessed
+            already_preprocessed = []
 
-        preprocessed = preprocessed or []
-        preprocessed_case_names = {Path(p).stem.rsplit("_", 1)[0] for p in preprocessed}  # assumes p[0] is CT path
-        remaining_case_dirs = [cd for cd in case_dirs_to_predict if cd.name not in preprocessed_case_names]
+        # print(f"[DEBUG] Remaining case directories to process: {not_preprocessed}")
 
         # Handle DICOM input
         if handling_dicom:
-            newly_processed = _handle_dicom_data(remaining_case_dirs,
+            newly_preprocessed = _handle_dicom_data(not_preprocessed,
                                                     output_prepro_dir, 
                                                     incl_rtstructs, output_dir_structs, output_dir_gts, 
                                                     verbose, overwrite, delete_structs_dir=False)
-            return preprocessed + (newly_processed or []), output_prepro_dir
+            return already_preprocessed + (newly_preprocessed or []), output_prepro_dir
     else:
         # Handle NIfTI input
         nii_files = list(input_path.rglob("*.nii.gz"))
@@ -355,6 +354,7 @@ def find_preprocessed(case_dirs, output_prepro_dir, incl_rtstructs, output_dir_g
         return []
 
     remaining_dirs = []
+    preprocessed = []  # List to store already preprocessed cases
 
     for case_dir in case_dirs:
         case_name = case_dir.name
@@ -373,8 +373,9 @@ def find_preprocessed(case_dirs, output_prepro_dir, incl_rtstructs, output_dir_g
         else:
             if verbose:
                 print(f"[DEBUG] Case {case_name} is fully preprocessed. Skipping.")
+            preprocessed.append(case_name)
 
-    return remaining_dirs
+    return remaining_dirs, preprocessed
 
 def _handle_existing_nifti_files(nii_files, output_prepro_dir, 
                                     overwrite, verbose):
