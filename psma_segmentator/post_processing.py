@@ -865,7 +865,7 @@ def post_process(
                             img_dir=prepro_dir,
                             verbose=verbose,
                             case_filter=None,
-                            overlap_threshold=0.6,
+                            overlap_threshold=0.5,
                             organ_suffix="_total"
                         )
 
