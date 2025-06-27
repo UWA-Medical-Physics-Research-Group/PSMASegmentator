@@ -249,18 +249,10 @@ def process_dicom(dicom_series, modality, nifti_path, sizes):
 
 
 def pre_process(input_path, incl_rtstructs, 
-                output_pred_dir, 
+                output_pred_dir,
+                output_prepro_dir,
+                handling_dicom,
                 verbose, overwrite):
-
-    if any(f.suffix == ".dcm" for f in input_path.rglob("*")):
-        print(f"Input path {shorten_path(input_path)} contains DICOM files.")
-        handling_dicom = True
-        output_prepro_dir = str(input_path.parent / f"{input_path.name}_preprocessed")
-        os.makedirs(output_prepro_dir, exist_ok=True)
-    else:
-        print(f"Input path {shorten_path(input_path)} contains NIfTI files.")
-        handling_dicom = False
-        output_prepro_dir = str(input_path)
 
     case_dirs = [d for d in input_path.iterdir() if d.is_dir()]
     
@@ -282,7 +274,7 @@ def pre_process(input_path, incl_rtstructs,
 
         if not case_dirs_to_predict:
             print("All cases have existing predictions. Nothing to process.")
-            return [], output_prepro_dir
+            return []
 
         # Among cases needing prediction, check which are already preprocessed
         if not overwrite:
@@ -300,7 +292,7 @@ def pre_process(input_path, incl_rtstructs,
                                                     output_prepro_dir, 
                                                     incl_rtstructs, output_dir_structs, output_dir_gts, 
                                                     verbose, overwrite, delete_structs_dir=False)
-            return already_preprocessed + (newly_preprocessed or []), output_prepro_dir
+            return already_preprocessed + (newly_preprocessed or [])
     else:
         # Handle NIfTI input
         nii_files = list(input_path.rglob("*.nii.gz"))
@@ -310,10 +302,10 @@ def pre_process(input_path, incl_rtstructs,
         if nii_files:
             newly_processed = _handle_existing_nifti_files(nii_files, output_prepro_dir, 
                                                             overwrite, verbose)
-            return newly_processed, output_prepro_dir # + preprocessed
+            return newly_processed # + preprocessed
         else:
             print("All NIfTI output files already exist and/or overwrite = False. Nothing to predict.")
-            return [], output_prepro_dir
+            return []
 
     raise ValueError(f"No valid NIfTI or DICOM files found in {input_path}.")
 

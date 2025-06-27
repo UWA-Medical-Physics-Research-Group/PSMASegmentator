@@ -132,12 +132,24 @@ def psma_segmentator(weights_dir: str = None,
     setup_psma_segmentator(weights_dir)
 
     download_fold_weights_via_api(weights_dir, headers, release_data)  # Download model weights if needed
+
+    if any(f.suffix == ".dcm" for f in input_path.rglob("*")):
+        print(f"Input path {shorten_path(input_path)} contains DICOM files.")
+        handling_dicom = True
+        output_prepro_dir = str(input_path.parent / f"{input_path.name}_preprocessed")
+        os.makedirs(output_prepro_dir, exist_ok=True)
+    else:
+        print(f"Input path {shorten_path(input_path)} contains NIfTI files.")
+        handling_dicom = False
+        output_prepro_dir = str(input_path)
     
     if not postprocess_only:
         # Preprocess the input files
-        list_of_lists, output_prepro_dir = pre_process(input_path, incl_rtstructs, 
-                                                        output_pred_dir=output_dir,
-                                                        verbose=verbose, overwrite=overwrite)
+        list_of_lists = pre_process(input_path, incl_rtstructs, 
+                                    output_pred_dir=output_dir,
+                                    output_prepro_dir=output_prepro_dir,
+                                    handling_dicom=handling_dicom,
+                                    verbose=verbose, overwrite=overwrite)
         if preprocess_only:
             print("\nPre-processing (only) complete. No segmentation performed.")
             return

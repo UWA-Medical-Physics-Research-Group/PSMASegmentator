@@ -428,7 +428,7 @@ def apply_suv_threshold(prepro_dir, output_dir,
         seg_base = os.path.splitext(os.path.splitext(seg_file)[0])[0]
         pt_path = os.path.join(prepro_dir, seg_base + '_0001.nii.gz')
         if not os.path.exists(pt_path):
-            print(f"Warning: Corresponding PET image not found for {shorten_path(seg_file)}. Skipping.")
+            print(f"Warning: Corresponding PET image not found for {shorten_path(seg_file)} in {shorten_path(pt_path)}. Skipping.")
             continue
         pt_img = nib.load(pt_path)
         pt_data = pt_img.get_fdata()
