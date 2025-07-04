@@ -1,3 +1,23 @@
+""" 
+PSMASegmentator is a tool for the automatic segmentation of PSMA 
+PET/CT images using Deep Learning (DL).
+Copyright (C) 2025 UWA Medical Physics Research Group, The University 
+of Western Australia, Crawley, WA, Australia
+
+This program is free software: you can redistribute it and/or modify
+it under the terms of the GNU General Public License as published by
+the Free Software Foundation, either version 3 of the License, or
+(at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+GNU General Public License for more details.
+
+You should have received a copy of the GNU General Public License
+along with this program.  If not, see <https://www.gnu.org/licenses/>.
+"""
+
 import argparse
 import torch
 from psma_segmentator.python_api import psma_segmentator
@@ -58,6 +78,14 @@ def main():
         help="Use fast mode for inference. This disables Test-Time Augmentation (TTA), and uses the --fast flag in TotalSegmentator for faster organ segmentation generation."
     )
 
+    parser.add_argument(
+        "--show_w", action="store_true", help="Show the GNU General Public License warranty disclaimer."
+    )
+
+    parser.add_argument(
+        "--show_c", action="store_true", help="Show the GNU General Public License terms and conditions."
+    )
+
     args = parser.parse_args()
 
     psma_segmentator(
@@ -73,7 +101,9 @@ def main():
                 postprocess_only = args.postprocess_only,
                 suv_thresh = args.suv_threshold,
                 organ_dir = args.organ_dir,
-                fast = args.fast
+                fast = args.fast,
+                show_w = args.show_w,
+                show_c = args.show_c
             )
 
 if __name__ == "__main__":
