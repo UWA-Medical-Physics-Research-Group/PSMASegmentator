@@ -293,18 +293,17 @@ def pre_process(input_path, incl_rtstructs,
             case_dirs_to_predict = case_dirs
 
         if not case_dirs_to_predict:
-            print("All cases have existing predictions. Nothing to process.")
+            print("All cases have existing predictions. Nothing to pre-process or infer.")
             return []
 
         # Among cases needing prediction, check which are already preprocessed
         if not overwrite:
-            not_preprocessed, already_preprocessed = find_preprocessed(case_dirs_to_predict, output_prepro_dir, incl_rtstructs, 
+            not_preprocessed, already_preprocessed = find_preprocessed(case_dirs_to_predict, output_prepro_dir, 
+                                                                        incl_rtstructs, 
                                                                         output_dir_gts, verbose)
         else:
             not_preprocessed = case_dirs_to_predict # If overwriting, all are considered not preprocessed
             already_preprocessed = []
-
-        # print(f"[DEBUG] Remaining case directories to process: {not_preprocessed}")
 
         # Handle DICOM input
         if handling_dicom:
@@ -322,6 +321,7 @@ def pre_process(input_path, incl_rtstructs,
         if nii_files:
             newly_processed = _handle_existing_nifti_files(nii_files, output_prepro_dir, 
                                                             overwrite, verbose)
+            print(f"Newly processed NIfTI files: {newly_processed}")
             return newly_processed # + preprocessed
         else:
             print("All NIfTI output files already exist and/or overwrite = False. Nothing to predict.")
@@ -365,8 +365,8 @@ def find_preprocessed(case_dirs, output_prepro_dir, incl_rtstructs, output_dir_g
         print(f"No case directories to check.")
         return []
 
-    remaining_dirs = []
-    preprocessed = []  # List to store already preprocessed cases
+    not_preprocessed = []
+    already_preprocessed = []  # List to store already preprocessed cases
 
     for case_dir in case_dirs:
         case_name = case_dir.name
@@ -380,14 +380,16 @@ def find_preprocessed(case_dirs, output_prepro_dir, incl_rtstructs, output_dir_g
 
         if not (ct_done and pt_done and (not incl_rtstructs or gt_done)):
             if verbose:
-                print(f"[DEBUG] Case {case_name} is NOT fully preprocessed. Will process.")
-            remaining_dirs.append(case_dir)
+                print(f"Case {case_name} is NOT fully preprocessed. Will process.")
+            # not_preprocessed.append(case_dir)
+            not_preprocessed.append([str(ct_path), str(pt_path)])  # Store paths for later processing
         else:
             if verbose:
-                print(f"[DEBUG] Case {case_name} is fully preprocessed. Skipping.")
-            preprocessed.append(case_name)
+                print(f"Case {case_name} is fully preprocessed. Skipping.")
+            # already_preprocessed.append(case_dir)
+            already_preprocessed.append([str(ct_path), str(pt_path)])  # Store paths for later inference
 
-    return remaining_dirs, preprocessed
+    return not_preprocessed, already_preprocessed
 
 def _handle_existing_nifti_files(nii_files, output_prepro_dir, 
                                     overwrite, verbose):
@@ -435,6 +437,10 @@ def _handle_dicom_data(case_dirs,
 
     # case_dirs = [d for d in input_path.iterdir() if d.is_dir()]
 
+    if not case_dirs:
+        print(f"No case directories found. Nothing to process.")
+        return []
+
     for case_dir in tqdm(case_dirs, desc="Pre-processing cases"):
         case_name = case_dir.name
         if verbose:
@@ -444,6 +450,7 @@ def _handle_dicom_data(case_dirs,
 
         for study_dir in case_dir.iterdir():
             if not study_dir.is_dir():
+                print(f"Skipping {shorten_path(study_dir)}: not a directory.")
                 continue
 
             dicom_series = get_modality_dirs_and_validate_pet(study_dir)

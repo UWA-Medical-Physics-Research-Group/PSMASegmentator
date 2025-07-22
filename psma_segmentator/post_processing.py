@@ -466,8 +466,11 @@ def apply_suv_threshold(prepro_dir, output_dir,
             os.makedirs(backup_dir, exist_ok=True)
 
             backup_path = os.path.join(backup_dir, seg_file)
-            print(f"Moving original segmentation to backup folder: {shorten_path(backup_path)}")
-            os.rename(seg_path, backup_path)  # move original to backup folder
+            if os.path.exists(backup_path):
+                print(f"Backup already exists at {shorten_path(backup_path)}. Skipping backup.")
+            else:
+                print(f"Moving original segmentation to backup folder: {shorten_path(backup_path)}")
+                os.rename(seg_path, backup_path)  # move original to backup folder
 
         nib.save(new_seg_img, seg_path)
 
@@ -873,10 +876,16 @@ def post_process(
                                     fast, 
                                     verbose)
 
-    lesion_results_json_path = os.path.join(Path(output_dir).parent, lesion_results_json)
+    lesion_results_dir = os.path.join(Path(output_dir).parent, "lesion_classification")
+    if not os.path.exists(lesion_results_dir):
+        os.makedirs(lesion_results_dir, exist_ok=True)
+        logging.info(f"Created lesion classification directory at {shorten_path(lesion_results_dir)}")
+    lesion_results_json_path = os.path.join(lesion_results_dir, lesion_results_json)
     if not overwrite and os.path.exists(lesion_results_json_path):
         logging.info(f"Lesion results JSON already exists at {shorten_path(lesion_results_json_path)} and overwrite is False. Skipping lesion classification and metrics extraction.")
-        return 
+        return
+    else:
+        logging.info(f"Lesion results JSON will be saved to {shorten_path(lesion_results_json_path)}")
 
     # Classify lesions (using generated organ segs) and extract biomarkers
     lesion_results_dict = lesion_classifier(

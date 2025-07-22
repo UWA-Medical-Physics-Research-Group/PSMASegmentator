@@ -143,7 +143,7 @@ This is free software, and you are welcome to redistribute it under certain cond
 
     # Create output directory if it doesn't exist
     if not os.path.exists(output_dir) and not preprocess_only:
-        os.makedirs(output_dir)
+        os.makedirs(output_dir, exist_ok=True)
 
     headers = {
         "Authorization": f"Bearer {token}",
