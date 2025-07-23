@@ -174,10 +174,28 @@ This is free software, and you are welcome to redistribute it under certain cond
         handling_dicom = True
         output_prepro_dir = str(input_path.parent / f"{input_path.name}_preprocessed")
         os.makedirs(output_prepro_dir, exist_ok=True)
-    else:
+
+    elif any(f.name.endswith((".nii", ".nii.gz")) for f in input_path.rglob("*")):
         print(f"Input path {shorten_path(input_path)} contains NIfTI files.")
         handling_dicom = False
-        output_prepro_dir = str(input_path)
+
+        has_nifti_subdir = any(
+            sub.is_dir() and any(f.name.endswith((".nii", ".nii.gz")) for f in sub.rglob("*"))
+            for sub in input_path.iterdir()
+        )
+
+        if has_nifti_subdir:
+            print("NIfTI files are organized in subdirectories.")
+            flattened_niftis = False
+            output_prepro_dir = str(input_path.parent / f"{input_path.name}_preprocessed")
+        else:
+            print("NIfTI files are flattened in the input directory.")
+            flattened_niftis = True
+            output_prepro_dir = str(input_path)
+
+    else:
+        raise ValueError(f"Input path {shorten_path(input_path)} contains no supported medical images.")
+
     
     if not postprocess_only:
         # Preprocess the input files
@@ -185,6 +203,7 @@ This is free software, and you are welcome to redistribute it under certain cond
                                     output_pred_dir=output_dir,
                                     output_prepro_dir=output_prepro_dir,
                                     handling_dicom=handling_dicom,
+                                    flattened_niftis=flattened_niftis,
                                     verbose=verbose, overwrite=overwrite)
         if preprocess_only:
             print("\nPre-processing (only) complete. No segmentation performed.")

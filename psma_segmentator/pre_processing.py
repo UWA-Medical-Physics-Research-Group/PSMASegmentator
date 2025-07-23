@@ -272,12 +272,14 @@ def pre_process(input_path, incl_rtstructs,
                 output_pred_dir,
                 output_prepro_dir,
                 handling_dicom,
+                flattened_niftis,
                 verbose, overwrite):
 
     case_dirs = [d for d in input_path.iterdir() if d.is_dir()]
     
     if case_dirs:
-        print(f"Found case directories in input path, assuming DICOM input.")
+        # print(f"Found case directories in input path, assuming DICOM input.")
+        # print(f"Case dirs: {case_dirs}")
         
         output_dir_structs = (input_path.parent / f"{input_path.name}_structs") if incl_rtstructs else None
         output_dir_gts = (input_path.parent / f"{input_path.name}_gt_segmentations") if incl_rtstructs else None
@@ -287,8 +289,10 @@ def pre_process(input_path, incl_rtstructs,
 
         # Filter to only cases needing prediction
         if not overwrite:
-            case_dirs_to_predict = find_predicted(case_dirs, output_pred_dir, 
-                                                    mode='case_dirs', verbose=verbose)
+            case_dirs_to_predict = find_predicted(case_dirs, 
+                                                    output_pred_dir, 
+                                                    mode='case_dirs', 
+                                                    verbose=verbose)
         else:
             case_dirs_to_predict = case_dirs
 
@@ -298,12 +302,18 @@ def pre_process(input_path, incl_rtstructs,
 
         # Among cases needing prediction, check which are already preprocessed
         if not overwrite:
-            not_preprocessed, already_preprocessed = find_preprocessed(case_dirs_to_predict, output_prepro_dir, 
+            not_preprocessed, preprocessed = find_preprocessed(case_dirs_to_predict, 
+                                                                        output_prepro_dir, 
                                                                         incl_rtstructs, 
-                                                                        output_dir_gts, verbose)
+                                                                        output_dir_gts, 
+                                                                        flattened_niftis, 
+                                                                        verbose)
         else:
             not_preprocessed = case_dirs_to_predict # If overwriting, all are considered not preprocessed
-            already_preprocessed = []
+            preprocessed = []
+        
+        # print(f"Not preprocessed cases: {not_preprocessed}")
+        # print(f"Already preprocessed cases: {preprocessed}")
 
         # Handle DICOM input
         if handling_dicom:
@@ -311,10 +321,13 @@ def pre_process(input_path, incl_rtstructs,
                                                     output_prepro_dir, 
                                                     incl_rtstructs, output_dir_structs, output_dir_gts, 
                                                     verbose, overwrite, delete_structs_dir=False)
-            return already_preprocessed + (newly_preprocessed or [])
+            return preprocessed + (newly_preprocessed or [])
+        elif flattened_niftis is False:
+            return preprocessed + not_preprocessed
     else:
         # Handle NIfTI input
         nii_files = list(input_path.rglob("*.nii.gz"))
+        print(f"nifti_files: {nii_files}")
         if not overwrite: # only check for predicted NIfTI files if not overwriting
             nii_files = find_predicted(nii_files, output_pred_dir,
                                         mode='nii_files', verbose=verbose)
@@ -360,34 +373,106 @@ def find_predicted(input_dir, output_pred_dir, mode, verbose=True):
 
     return remaining
 
-def find_preprocessed(case_dirs, output_prepro_dir, incl_rtstructs, output_dir_gts, verbose):
+# def find_preprocessed(case_dirs, 
+#                         output_prepro_dir, 
+#                         incl_rtstructs, 
+#                         output_dir_gts, 
+#                         flattened_niftis, 
+#                         verbose):
+#     if not case_dirs:
+#         print(f"No case directories to check.")
+#         return []
+
+#     not_preprocessed = []
+#     already_preprocessed = []  # List to store already preprocessed cases
+
+#     for case_dir in case_dirs:
+#         case_name = case_dir.name
+#         ct_path = Path(output_prepro_dir) / f"{case_name}_0000.nii.gz"
+#         pt_path = Path(output_prepro_dir) / f"{case_name}_0001.nii.gz"
+
+#         ct_done, pt_done, gt_done = _already_preprocessed(
+#             ct_path, pt_path, output_dir_gts, 
+#             case_name, incl_rtstructs, verbose
+#         )
+
+#         if not (ct_done and pt_done and (not incl_rtstructs or gt_done)):
+#             if verbose:
+#                 print(f"Case {case_name} is NOT fully preprocessed. Will process.")
+#             # not_preprocessed.append(case_dir)
+#             not_preprocessed.append([str(ct_path), str(pt_path)])  # Store paths for later processing
+#         else:
+#             if verbose:
+#                 print(f"Case {case_name} is fully preprocessed. Skipping.")
+#             # already_preprocessed.append(case_dir)
+#             already_preprocessed.append([str(ct_path), str(pt_path)])  # Store paths for later inference
+
+#     return not_preprocessed, already_preprocessed
+
+def find_preprocessed(case_dirs, 
+                        output_prepro_dir, 
+                        incl_rtstructs, 
+                        output_dir_gts, 
+                        flattened_niftis, 
+                        verbose):
+
     if not case_dirs:
         print(f"No case directories to check.")
         return []
 
     not_preprocessed = []
-    already_preprocessed = []  # List to store already preprocessed cases
+    already_preprocessed = []
 
     for case_dir in case_dirs:
         case_name = case_dir.name
         ct_path = Path(output_prepro_dir) / f"{case_name}_0000.nii.gz"
         pt_path = Path(output_prepro_dir) / f"{case_name}_0001.nii.gz"
 
+        if not flattened_niftis:
+            nifti_files = list(case_dir.rglob("*.nii")) + list(case_dir.rglob("*.nii.gz"))
+
+            def find_modality(modality):
+                for f in nifti_files:
+                    if modality in f.name.lower() and "resampled" in f.name.lower():
+                        return f
+                for f in nifti_files:
+                    if modality in f.name.lower():
+                        return f
+                return None
+
+            ct_file = find_modality("ct")
+            pt_file = find_modality("pt")
+
+            # Ensure output dir exists
+            ct_path.parent.mkdir(parents=True, exist_ok=True)
+
+            if ct_file is not None:
+                if not ct_path.exists():
+                    print(f"Copying CT: {ct_file} → {ct_path}")
+                    shutil.copy(ct_file, ct_path)
+            if pt_file is not None:
+                if not pt_path.exists():
+                    print(f"Copying PT: {pt_file} → {pt_path}")
+
+                    shutil.copy(pt_file, pt_path)
+
+        # Only proceed if both CT and PT exist
+        if not ct_path.exists() or not pt_path.exists():
+            continue
+
         ct_done, pt_done, gt_done = _already_preprocessed(
-            ct_path, pt_path, output_dir_gts, 
+            ct_path, pt_path, output_dir_gts,
             case_name, incl_rtstructs, verbose
         )
 
         if not (ct_done and pt_done and (not incl_rtstructs or gt_done)):
             if verbose:
                 print(f"Case {case_name} is NOT fully preprocessed. Will process.")
-            # not_preprocessed.append(case_dir)
-            not_preprocessed.append([str(ct_path), str(pt_path)])  # Store paths for later processing
+            not_preprocessed.append([str(ct_path), str(pt_path)])
         else:
             if verbose:
                 print(f"Case {case_name} is fully preprocessed. Skipping.")
-            # already_preprocessed.append(case_dir)
-            already_preprocessed.append([str(ct_path), str(pt_path)])  # Store paths for later inference
+            already_preprocessed.append([str(ct_path), str(pt_path)])
 
     return not_preprocessed, already_preprocessed
 
