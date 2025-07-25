@@ -19,7 +19,8 @@ along with this program.  If not, see <https://www.gnu.org/licenses/>.
 """
 
 import argparse
-import torch
+import re
+import os
 from psma_segmentator.python_api import psma_segmentator
 
 def main():
@@ -42,8 +43,8 @@ def main():
         help="Specify PSMA Segmentator version to use (in form x.y.z). Defaults to latest release if not provided."
     )
     parser.add_argument(
-        "-d", "--device", choices=["cpu", "cuda"], default="cuda" if torch.cuda.is_available() else "cpu",
-        help="Device to use for processing. Defaults to 'cuda' if available, otherwise 'cpu'."
+        "-d", "--device", type=str, default=None, # None means auto-detect (in python_api.py)
+        help="Device to use for processing, e.g., 'cpu', 'cuda', or 'cuda:n' (0 <= n <= num_gpus). Defaults to 'cuda' if available, otherwise 'cpu'."
     )
     parser.add_argument(
         "--include_rtstructs", required=False, action="store_true",
@@ -87,6 +88,12 @@ def main():
     )
 
     args = parser.parse_args()
+
+    if args.device is not None:
+        if re.match(r"^cuda:\d+$", args.device):
+            gpu_idx = args.device.split(":")[1]
+            os.environ["CUDA_VISIBLE_DEVICES"] = gpu_idx
+            print(f"Restricted CUDA visibility to GPU {gpu_idx}")
 
     psma_segmentator(
                 input_dir = args.input_dir, 

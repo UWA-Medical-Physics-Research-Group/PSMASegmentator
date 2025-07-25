@@ -380,8 +380,8 @@ def generate_organ_segmentations(prepro_dir, output_segs_dir,
                                     device, 
                                     fast,
                                     verbose):
-    if device == 'cuda':
-        device = 'gpu'  # update to 'gpu' for compatibility with TotalSegmentator
+    if not device == 'cpu': # assume 'cuda' or 'cuda:n'
+        device = 'gpu'  # update to 'gpu' for compatibility with TotalSegmentator (used CUDA_VISIBLE_DEVICES to bypass gpu specificiation)
 
     cases = [case for case in os.listdir(prepro_dir) if case.endswith("0000.nii.gz")]
 

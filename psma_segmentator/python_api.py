@@ -20,9 +20,8 @@ along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 import os
 from pathlib import Path
-import csv
 import torch
-from importlib.metadata import version
+import re
 import requests
 import shutil
 from psma_segmentator.download_weights import download_fold_weights_via_api
@@ -78,6 +77,16 @@ def setup_psma_segmentator(weights_dir: str):
     os.environ["nnUNet_preprocessed"] = str(weights_dir)
     os.environ["nnUNet_results"] = str(weights_dir)
 
+def validate_device_str(device):
+    if device == "cpu":
+        return 
+    elif device == "cuda" or re.match(r"^cuda:\d+$", device):
+        if not torch.cuda.is_available():
+            raise ValueError("CUDA requested but not available.")
+        return 
+    else:
+        raise ValueError(f"Invalid device string: {device}. Supported values are 'cpu', 'cuda', or 'cuda:n' (0 <= n <= num_gpus).")
+
 def psma_segmentator(weights_dir: str = None, 
                         input_dir: str = None,
                         output_dir: str = None, 
@@ -127,6 +136,9 @@ This is free software, and you are welcome to redistribute it under certain cond
 
     if show_c:
         show_con_text()
+
+    # Validate device
+    validate_device_str(device)
 
     if not os.path.exists(input_dir):
         raise FileNotFoundError(f"Input directory {input_dir} does not exist.")

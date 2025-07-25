@@ -40,19 +40,14 @@ def segmentate(model_folder, list_of_lists,
                 step_size=0.5):
     """
     Runs inference using nnUNet for all cases in the preprocessed directory.
-    """
-    assert device in ['cuda', 'cpu', 'mps'] or isinstance(device, torch.device), "Invalid device specified."
-    
+    """    
     if device == 'cpu':
         torch.set_num_threads(multiprocessing.cpu_count())
-        device = torch.device('cpu')
         perform_everything_on_device = False
-    elif device == 'cuda':
+    else: # assuming 'cuda' or 'cuda:n'
         torch.set_num_threads(1)
-        device = torch.device('cuda')
         perform_everything_on_device = True
-    else:
-        device = torch.device('mps')
+    device = torch.device(device) # convert str to torch device
 
     # Initialize predictor
     predictor = nnUNetPredictor(
