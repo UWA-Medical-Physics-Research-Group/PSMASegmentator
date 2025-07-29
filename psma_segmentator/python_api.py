@@ -180,8 +180,9 @@ This is free software, and you are welcome to redistribute it under certain cond
     setup_psma_segmentator(weights_dir)
 
     download_fold_weights_via_api(weights_dir, headers, release_data)  # Download model weights if needed
-
-    if any(f.suffix == ".dcm" for f in input_path.rglob("*")):
+    
+    nifti_subdirs = False 
+    if any((f.suffix == ".dcm" or f.name.lower() == 'dicom') for f in input_path.rglob("*")):
         print(f"Input path {shorten_path(input_path)} contains DICOM files.")
         handling_dicom = True
         output_prepro_dir = str(input_path.parent / f"{input_path.name}_preprocessed")
@@ -195,14 +196,13 @@ This is free software, and you are welcome to redistribute it under certain cond
             sub.is_dir() and any(f.name.endswith((".nii", ".nii.gz")) for f in sub.rglob("*"))
             for sub in input_path.iterdir()
         )
-
+        
         if has_nifti_subdir:
             print("NIfTI files are organized in subdirectories.")
-            flattened_niftis = False
             output_prepro_dir = str(input_path.parent / f"{input_path.name}_preprocessed")
+            nifti_subdirs = True
         else:
             print("NIfTI files are flattened in the input directory.")
-            flattened_niftis = True
             output_prepro_dir = str(input_path)
 
     else:
@@ -215,7 +215,7 @@ This is free software, and you are welcome to redistribute it under certain cond
                                     output_pred_dir=output_dir,
                                     output_prepro_dir=output_prepro_dir,
                                     handling_dicom=handling_dicom,
-                                    flattened_niftis=flattened_niftis,
+                                    nifti_subdirs=nifti_subdirs,
                                     verbose=verbose, overwrite=overwrite)
         if preprocess_only:
             print("\nPre-processing (only) complete. No segmentation performed.")
