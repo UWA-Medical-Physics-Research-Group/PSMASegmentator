@@ -164,6 +164,8 @@ def pre_process(input_path, incl_rtstructs,
     raise ValueError(f"No valid NIfTI or DICOM files found in {input_path}.")
 
 
+# ANTI-REDUNDANCY FUNCTIONS
+
 def find_predicted(input_dir, output_pred_dir, mode, verbose=True):
     remaining = [] # List of files/directories that need to be processed
 
@@ -377,91 +379,117 @@ def handle_dicoms(case_dirs,
     return list_of_lists
 
 
-# def dicom_to_nifti(dicom_dir: str, nifti_path: str,
-#                     is_pet: bool, ds):
-#     reader = sitk.ImageSeriesReader()
-#     dicom_series = reader.GetGDCMSeriesFileNames(str(dicom_dir))
-#     reader.SetFileNames(dicom_series)
-#     volume = reader.Execute()
-#     volume = sitk.DICOMOrient(volume, "LPS")
-#     size = volume.GetSize() #GetWise
+def get_sorted_dicom_files_by_z(dicom_dir):
+    dicom_files = [os.path.join(dicom_dir, f) for f in os.listdir(dicom_dir)
+                    if not f.startswith('.') and os.path.isfile(os.path.join(dicom_dir, f))]
 
-#     if is_pet:
-#         suv_factor = get_suv_bw_scale_factor(ds)
-#         # Convert the PET image to SUV
-#         volume *= suv_factor
+    dicoms = []
+    for f in dicom_files:
+        try:
+            ds = pydicom.dcmread(f, stop_before_pixels=True)
+            z = float(ds.ImagePositionPatient[2])
+            dicoms.append((z, f))
+        except Exception as e:
+            print(f"[WARNING] Skipping {f}: {e}")
 
-#     sitk.WriteImage(volume, nifti_path)
-#     return size
+    dicoms.sort(key=lambda x: x[0])
+    return [f for (_, f) in dicoms]
 
-def dicom_to_nifti(dicom_dir: str, nifti_path: str, is_pet: bool, ds): 
+def dicom_to_nifti(dicom_dir: str, nifti_path: str, is_pet: bool, ds_for_suv):
     print(f"[INFO] Reading DICOM from: {dicom_dir}")
-    
-    reader = sitk.ImageSeriesReader()
-    dicom_series = reader.GetGDCMSeriesFileNames(str(dicom_dir))
-    
-    if not dicom_series:
-        raise ValueError(f"[ERROR] No DICOM series found in directory: {dicom_dir}")
-    
-    print(f"[DEBUG] Number of DICOM files in series: {len(dicom_series)}")
-    print(f"[DEBUG] First 3 DICOM files: {dicom_series[:3]}")
-    
-    reader.SetFileNames(dicom_series)
-    volume = reader.Execute()
-
-    print(f"[DEBUG] Volume loaded. Size: {volume.GetSize()}, Spacing: {volume.GetSpacing()}, Origin: {volume.GetOrigin()}, Direction: {volume.GetDirection()}")
-    print(f"[DEBUG] Pixel type: {volume.GetPixelIDTypeAsString()} | Components per pixel: {volume.GetNumberOfComponentsPerPixel()}")
-
-    # Convert to numpy array for range inspection
-    volume_np = sitk.GetArrayFromImage(volume)
-    print(f"[DEBUG] Volume numpy shape: {volume_np.shape}")
-    print(f"[DEBUG] Intensity range before orientation: min={volume_np.min()}, max={volume_np.max()}")
-
-    # Save PNG before orientation
-    save_middle_slice_png(volume_np, nifti_path, tag="before_orientation")
-
-    # Reorient image
-    volume = sitk.DICOMOrient(volume, "LPS")
-    volume_np_oriented = sitk.GetArrayFromImage(volume)
-
-    print(f"[DEBUG] After orientation to LPS:")
-    print(f"        Size: {volume.GetSize()}, Spacing: {volume.GetSpacing()}, Origin: {volume.GetOrigin()}")
-    print(f"        Intensity range: min={volume_np_oriented.min()}, max={volume_np_oriented.max()}")
-
-    # Save PNG after orientation
-    save_middle_slice_png(volume_np_oriented, nifti_path, tag="after_orientation")
 
     if is_pet:
-        suv_factor = get_suv_bw_scale_factor(ds)
+        # --- PET: Use SimpleITK ---
+        reader = sitk.ImageSeriesReader()
+        dicom_series = reader.GetGDCMSeriesFileNames(str(dicom_dir))
+        reader.SetFileNames(dicom_series)
+        volume = reader.Execute()
+        volume = sitk.DICOMOrient(volume, "LPS")
+
+        suv_factor = get_suv_bw_scale_factor(ds_for_suv)
         print(f"[DEBUG] Applying SUV scale factor: {suv_factor}")
         volume *= suv_factor
 
-        volume_np_suv = sitk.GetArrayFromImage(volume)
-        print(f"[DEBUG] After SUV conversion: Intensity range: min={volume_np_suv.min()}, max={volume_np_suv.max()}")
+        sitk.WriteImage(volume, nifti_path)
+        print(f"[INFO] Wrote PET NIfTI to: {nifti_path}")
+        return volume.GetSize()
 
-        save_middle_slice_png(volume_np_suv, nifti_path, tag="after_suv")
     else:
-        print(f"[DEBUG] CT image stats:")
-        print(f"        Pixel type: {volume.GetPixelIDTypeAsString()}")
-        print(f"        Size: {volume.GetSize()}")
-        print(f"        Spacing: {volume.GetSpacing()}")
-        print(f"        Origin: {volume.GetOrigin()}")
-        print(f"        Range: min={volume_np_oriented.min()}, max={volume_np_oriented.max()}")
+        # --- CT: Manual stacking with HU rescaling and direction fix ---
+        dicom_files = [os.path.join(dicom_dir, f) for f in os.listdir(dicom_dir)
+                        if not f.startswith('.') and os.path.isfile(os.path.join(dicom_dir, f))]
 
-    if np.allclose(sitk.GetArrayFromImage(volume), 0):
-        print(f"[WARNING] All voxels in volume are zero. Possible conversion issue!")
+        dicoms = []
+        for f in dicom_files:
+            try:
+                ds = pydicom.dcmread(f)
+                z = float(ds.ImagePositionPatient[2])
+                dicoms.append((z, ds))
+            except Exception as e:
+                print(f"[WARNING] Skipping {f}: {e}")
 
-    print(f"[INFO] Saving NIfTI to: {nifti_path}")
+        dicoms.sort(key=lambda x: x[0])
+        sorted_ds = [d[1] for d in dicoms]
+        print(f"[DEBUG] Sorted {len(sorted_ds)} CT slices by Z")
+
+        # Apply HU rescale
+        hu_slices = []
+        for ds in sorted_ds:
+            slope = float(getattr(ds, "RescaleSlope", 1))
+            intercept = float(getattr(ds, "RescaleIntercept", 0))
+            hu = ds.pixel_array.astype(np.float32) * slope + intercept
+            hu_slices.append(hu)
+
+        volume_np = np.stack(hu_slices, axis=0)
+
+        # Spatial metadata
+        first = sorted_ds[0]
+        pixel_spacing = [float(x) for x in first.PixelSpacing]  # [row, col]
+        origin = [float(x) for x in first.ImagePositionPatient]
+
+        # Get actual inter-slice spacing from z differences
+        z_positions = [float(ds.ImagePositionPatient[2]) for ds in sorted_ds]
+        z_diffs = np.diff(z_positions)
+        if not np.allclose(z_diffs, z_diffs[0]):
+            print(f"[WARNING] Non-uniform slice spacing detected. Using mean: {np.mean(z_diffs)}")
+        slice_spacing = float(np.mean(z_diffs)) if len(z_diffs) > 0 else 1.0
+        spacing = [slice_spacing] + pixel_spacing  # (z, y, x)
+
+        # Build direction matrix from ImageOrientationPatient
+        iop = [float(v) for v in first.ImageOrientationPatient]  # 6 values
+        row = np.array(iop[0:3])
+        col = np.array(iop[3:6])
+        slice_dir = np.cross(row, col)
+        direction = np.concatenate([row, col, slice_dir])  # 9 values
+
+        # Convert to SimpleITK
+        volume_sitk = sitk.GetImageFromArray(volume_np)  # shape (z, y, x)
+        volume_sitk.SetSpacing(spacing[::-1])            # (x, y, z)
+        volume_sitk.SetOrigin(origin)
+        volume_sitk.SetDirection(direction.tolist())
+
+        sitk.WriteImage(volume_sitk, nifti_path)
+        print(f"[INFO] Wrote CT NIfTI to: {nifti_path}")
+        return volume_sitk.GetSize()
+
+
+def dicom_to_nifti(dicom_dir: str, nifti_path: str,
+                    is_pet: bool, ds):
+    reader = sitk.ImageSeriesReader()
+    dicom_series = reader.GetGDCMSeriesFileNames(str(dicom_dir))
+    reader.SetFileNames(dicom_series)
+    volume = reader.Execute()
+    volume = sitk.DICOMOrient(volume, "LPS")
+    size = volume.GetSize() #GetWise
+
+    if is_pet:
+        suv_factor = get_suv_bw_scale_factor(ds)
+        # Convert the PET image to SUV
+        volume *= suv_factor
+
     sitk.WriteImage(volume, nifti_path)
+    return size
 
-    # Reload to verify
-    volume_reloaded = sitk.ReadImage(nifti_path)
-    volume_np_reloaded = sitk.GetArrayFromImage(volume_reloaded)
-    print(f"[DEBUG] Reloaded NIfTI intensity range: min={volume_np_reloaded.min()}, max={volume_np_reloaded.max()}")
-
-    save_middle_slice_png(volume_np_reloaded, nifti_path, tag="after_write")
-
-    return volume.GetSize()
 
 def process_dicom(dicom_series, modality, 
                     nifti_path, sizes):
