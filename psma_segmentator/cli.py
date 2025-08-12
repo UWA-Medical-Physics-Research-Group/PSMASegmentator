@@ -87,6 +87,10 @@ def main():
         "--show_c", action="store_true", help="Show the GNU General Public License terms and conditions."
     )
 
+    parser.add_argument(
+        "--anonymize", action="store_true", default=False, help="Anonymize patient-identifiable data in the output results."
+    )
+
     args = parser.parse_args()
 
     if args.device is not None:
@@ -110,7 +114,8 @@ def main():
                 organ_dir = args.organ_dir,
                 fast = args.fast,
                 show_w = args.show_w,
-                show_c = args.show_c
+                show_c = args.show_c,
+                anonymize = args.anonymize
             )
 
 if __name__ == "__main__":

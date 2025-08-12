@@ -111,7 +111,8 @@ def psma_segmentator(weights_dir: str = None,
                         organ_dir: str = None,
                         fast: bool = False,
                         show_w: bool = False,
-                        show_c: bool = False
+                        show_c: bool = False,
+                        anonymize: bool = False
                     ):
     """
     Runs the PSMA segmentation pipeline, comprising pre-processing, segmentation, and post-processing.
@@ -256,7 +257,8 @@ This is free software, and you are welcome to redistribute it under certain cond
         suv_thresh=suv_thresh,
         fast=fast,
         verbose=verbose,
-        overwrite=overwrite
+        overwrite=overwrite,
+        anonymize=anonymize
     )
 
     print("\nPSMA segmentation pipeline complete.")
