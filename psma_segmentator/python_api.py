@@ -77,13 +77,22 @@ def setup_psma_segmentator(weights_dir: str):
     os.environ["nnUNet_preprocessed"] = str(weights_dir)
     os.environ["nnUNet_results"] = str(weights_dir)
 
-def validate_device_str(device):
-    if device == "cpu":
-        return 
+def validate_device(device):
+    if device is None:
+        if torch.cuda.is_available():
+            print("No device specified. Using 'cuda' as default.")
+            return "cuda"
+        else:
+            print("No device specified and CUDA not available. Using 'cpu' as default.")
+            return "cpu"
+    elif device == "cpu":
+        if torch.cuda.is_available():
+            print("Using 'cpu' as specified, but CUDA is available. Consider using 'cuda' for better performance.")
+        return device
     elif device == "cuda" or re.match(r"^cuda:\d+$", device):
         if not torch.cuda.is_available():
             raise ValueError("CUDA requested but not available.")
-        return 
+        return device
     else:
         raise ValueError(f"Invalid device string: {device}. Supported values are 'cpu', 'cuda', or 'cuda:n' (0 <= n <= num_gpus).")
 
@@ -138,7 +147,7 @@ This is free software, and you are welcome to redistribute it under certain cond
         show_con_text()
 
     # Validate device
-    validate_device_str(device)
+    device = validate_device(device)
 
     if not os.path.exists(input_dir):
         raise FileNotFoundError(f"Input directory {input_dir} does not exist.")

@@ -43,7 +43,7 @@ def main():
         help="Specify PSMA Segmentator version to use (in form x.y.z). Defaults to latest release if not provided."
     )
     parser.add_argument(
-        "-d", "--device", type=str, default=None, # None means auto-detect (in python_api.py)
+        "-d", "--device", type=str, required=False, default=None,
         help="Device to use for processing, e.g., 'cpu', 'cuda', or 'cuda:n' (0 <= n <= num_gpus). Defaults to 'cuda' if available, otherwise 'cpu'."
     )
     parser.add_argument(
