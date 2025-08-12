@@ -258,7 +258,7 @@ This is free software, and you are welcome to redistribute it under certain cond
         fast=fast,
         verbose=verbose,
         overwrite=overwrite,
-        anonymize=anonymize
+        # anonymize=anonymize
     )
 
     print("\nPSMA segmentation pipeline complete.")
