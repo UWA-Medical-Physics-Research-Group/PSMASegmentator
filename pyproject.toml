@@ -27,7 +27,8 @@ dependencies = [
     "dicom2nifti",
     "pyarrow",
     "pydicom>=3.0.0",
-    "TotalSegmentator==2.4.0"
+    "TotalSegmentator==2.4.0",
+    "monai"
 ]
 
 [project.scripts]

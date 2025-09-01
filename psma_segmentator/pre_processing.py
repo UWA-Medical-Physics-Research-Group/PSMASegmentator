@@ -79,7 +79,8 @@ def save_middle_slice_png(np_volume, nifti_path,
 
 # MAIN PRE-PROCESSING FUNCTION
 
-def pre_process(input_path, incl_rtstructs, 
+def pre_process(input_path, 
+                incl_rtstructs, 
                 output_pred_dir,
                 output_prepro_dir,
                 handling_dicom,

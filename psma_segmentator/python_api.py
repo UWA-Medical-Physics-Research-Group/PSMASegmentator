@@ -29,6 +29,38 @@ from psma_segmentator.inference import segmentate
 from psma_segmentator.pre_processing import pre_process, shorten_path
 from psma_segmentator.post_processing import post_process
 
+def validate_inputs_dirs(input_dir, input_ct, input_pet):
+    # Can't have nothing provided
+    if input_dir is None and (input_ct is None or input_pet is None):
+        raise ValueError("If -i is not provided, both -i_ct and -i_pet must be provided.")
+    # Can't have both input_dir and input_ct/input_pet
+    if input_dir is not None and (input_ct is not None or input_pet is not None):
+        raise ValueError("Cannot provide both -i and -i_ct/-i_pet.")
+    # If input_ct is provided, input_pet must also be provided, and vice versa
+    if input_ct is not None and input_pet is None:
+        raise ValueError("If -i_ct is provided, -i_pet must also be provided.")
+    if input_pet is not None and input_ct is None:
+        raise ValueError("If -i_pet is provided, -i_ct must also be provided.")
+
+def validate_device(device):
+    if device is None:
+        if torch.cuda.is_available():
+            print("No device specified. Using 'cuda' as default.")
+            return "cuda"
+        else:
+            print("No device specified and CUDA not available. Using 'cpu' as default.")
+            return "cpu"
+    elif device == "cpu":
+        if torch.cuda.is_available():
+            print("Using 'cpu' as specified, but CUDA is available. Consider using 'cuda' for better performance.")
+        return device
+    elif device == "cuda" or re.match(r"^cuda:\d+$", device):
+        if not torch.cuda.is_available():
+            raise ValueError("CUDA requested but not available.")
+        return device
+    else:
+        raise ValueError(f"Invalid device string: {device}. Supported values are 'cpu', 'cuda', or 'cuda:n' (0 <= n <= num_gpus).")
+
 def get_version_data(repo, version, headers):
     """
     Fetch release data from GitHub.
@@ -77,27 +109,10 @@ def setup_psma_segmentator(weights_dir: str):
     os.environ["nnUNet_preprocessed"] = str(weights_dir)
     os.environ["nnUNet_results"] = str(weights_dir)
 
-def validate_device(device):
-    if device is None:
-        if torch.cuda.is_available():
-            print("No device specified. Using 'cuda' as default.")
-            return "cuda"
-        else:
-            print("No device specified and CUDA not available. Using 'cpu' as default.")
-            return "cpu"
-    elif device == "cpu":
-        if torch.cuda.is_available():
-            print("Using 'cpu' as specified, but CUDA is available. Consider using 'cuda' for better performance.")
-        return device
-    elif device == "cuda" or re.match(r"^cuda:\d+$", device):
-        if not torch.cuda.is_available():
-            raise ValueError("CUDA requested but not available.")
-        return device
-    else:
-        raise ValueError(f"Invalid device string: {device}. Supported values are 'cpu', 'cuda', or 'cuda:n' (0 <= n <= num_gpus).")
-
 def psma_segmentator(weights_dir: str = None, 
                         input_dir: str = None,
+                        input_ct: str = None,
+                        input_pet: str = None,
                         output_dir: str = None, 
                         token: str = None,
                         version: str = None,
@@ -150,22 +165,65 @@ This is free software, and you are welcome to redistribute it under certain cond
     # Validate device
     device = validate_device(device)
 
-    if not os.path.exists(input_dir):
-        raise FileNotFoundError(f"Input directory {input_dir} does not exist.")
-    input_path = Path(input_dir)
-    
-    if incl_rtstructs == True and shutil.which("plastimatch") is None:
-        raise EnvironmentError(
-            "Plastimatch not found. Please install Plastimatch (e.g., via 'sudo apt install plastimatch') if you want to include RTSTRUCT processing."
-        )
+    # Validate inputs
+    validate_inputs_dirs(input_dir, input_ct, input_pet)
 
-    if output_dir is None:
-        output_dir = str(input_path.parent / f"{input_path.name}_outputs")
-        print(f"\nOutput directory not specified. Using: {output_dir}")
+    if input_dir is not None:
+        if not os.path.exists(input_dir):
+            raise FileNotFoundError(f"Input directory {input_dir} does not exist.")
+        input_path = Path(input_dir)
+
+        if output_dir is None:
+            output_dir = str(input_path.parent / f"{input_path.name}_outputs")
+            print(f"\nOutput directory not specified. Using: {output_dir}")
+        
+        nifti_subdirs = False 
+        if any((f.suffix == ".dcm" or f.name.lower() == 'dicom') for f in input_path.rglob("*")):
+            print(f"Input path {shorten_path(input_path)} contains DICOM files.")
+            handling_dicom = True
+            output_prepro_dir = str(input_path.parent / f"{input_path.name}_preprocessed")
+            os.makedirs(output_prepro_dir, exist_ok=True)
+
+        elif any(f.name.endswith((".nii", ".nii.gz")) for f in input_path.rglob("*")):
+            print(f"Input path {shorten_path(input_path)} contains NIfTI files.")
+            handling_dicom = False
+
+            has_nifti_subdir = any(
+                sub.is_dir() and any(f.name.endswith((".nii", ".nii.gz")) for f in sub.rglob("*"))
+                for sub in input_path.iterdir()
+            )
+            
+            if has_nifti_subdir:
+                print("NIfTI files are organized in subdirectories.")
+                output_prepro_dir = str(input_path.parent / f"{input_path.name}_preprocessed")
+                nifti_subdirs = True
+            else:
+                print("NIfTI files are flattened in the input directory.")
+                output_prepro_dir = str(input_path)
+
+        else:
+            raise ValueError(f"Input path {shorten_path(input_path)} contains no supported medical images.")
+    elif input_ct is not None and input_pet is not None:
+        if not os.path.exists(input_ct):
+            raise FileNotFoundError(f"Input CT path {input_ct} does not exist.")
+        if not os.path.exists(input_pet):
+            raise FileNotFoundError(f"Input PET path {input_pet} does not exist.")
+        input_path = None
+        handling_dicom = False
+        nifti_subdirs = False
+        if output_dir is None:
+            output_dir = str(Path(input_ct).parent / f"{Path(input_ct).stem}_outputs")
+            print(f"\nOutput directory not specified. Using: {output_dir} (based on input_ct path)")
+        output_prepro_dir = str(Path(input_ct).parent / f"{Path(input_ct).stem}_preprocessed")
 
     # Create output directory if it doesn't exist
     if not os.path.exists(output_dir) and not preprocess_only:
         os.makedirs(output_dir, exist_ok=True)
+
+    if incl_rtstructs == True and shutil.which("plastimatch") is None:
+        raise EnvironmentError(
+        "Plastimatch not found. Please install Plastimatch (e.g., via 'sudo apt install plastimatch') if you want to include RTSTRUCT processing."
+        )
 
     headers = {
         "Authorization": f"Bearer {token}",
@@ -191,37 +249,12 @@ This is free software, and you are welcome to redistribute it under certain cond
 
     download_fold_weights_via_api(weights_dir, headers, release_data)  # Download model weights if needed
     
-    nifti_subdirs = False 
-    if any((f.suffix == ".dcm" or f.name.lower() == 'dicom') for f in input_path.rglob("*")):
-        print(f"Input path {shorten_path(input_path)} contains DICOM files.")
-        handling_dicom = True
-        output_prepro_dir = str(input_path.parent / f"{input_path.name}_preprocessed")
-        os.makedirs(output_prepro_dir, exist_ok=True)
-
-    elif any(f.name.endswith((".nii", ".nii.gz")) for f in input_path.rglob("*")):
-        print(f"Input path {shorten_path(input_path)} contains NIfTI files.")
-        handling_dicom = False
-
-        has_nifti_subdir = any(
-            sub.is_dir() and any(f.name.endswith((".nii", ".nii.gz")) for f in sub.rglob("*"))
-            for sub in input_path.iterdir()
-        )
-        
-        if has_nifti_subdir:
-            print("NIfTI files are organized in subdirectories.")
-            output_prepro_dir = str(input_path.parent / f"{input_path.name}_preprocessed")
-            nifti_subdirs = True
-        else:
-            print("NIfTI files are flattened in the input directory.")
-            output_prepro_dir = str(input_path)
-
-    else:
-        raise ValueError(f"Input path {shorten_path(input_path)} contains no supported medical images.")
-
-    
     if not postprocess_only:
         # Preprocess the input files
-        list_of_lists = pre_process(input_path, incl_rtstructs, 
+        list_of_lists = pre_process(input_path, 
+                                    input_ct,
+                                    input_pet,
+                                    incl_rtstructs, 
                                     output_pred_dir=output_dir,
                                     output_prepro_dir=output_prepro_dir,
                                     handling_dicom=handling_dicom,

@@ -17,6 +17,9 @@ GNU General Public License for more details.
 You should have received a copy of the GNU General Public License
 along with this program.  If not, see <https://www.gnu.org/licenses/>.
 """
+import warnings
+warnings.filterwarnings("ignore", category=UserWarning, message=".*pkg_resources is deprecated.*", module=".*TotalSegmentator.*")
+
 
 import SimpleITK as sitk
 import os
@@ -33,9 +36,24 @@ import SimpleITK as sitk
 import nibabel as nib
 import matplotlib.pyplot as plt
 import math
+from nibabel.orientations import aff2axcodes, axcodes2ornt, ornt_transform, apply_orientation
+from nibabel.processing import resample_from_to
+from scipy.ndimage import zoom
+import torch
+import torch.nn.functional as F
+from monai.networks.nets import DenseNet121
+from monai.transforms import Compose, NormalizeIntensity
+import csv
+from datetime import datetime
+
 from psma_segmentator.pre_processing import shorten_path
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(message)s")
+
+# IMPORTANT VARS
+
+TARGET_SPACING = (4.0728, 4.0728, 2.0)
+TARGET_ORIENT = ('L', 'A', 'S')
 
 ## Define the mapping from TotalSegmentator labels to biomarker regions ##
 biomarker_regions = ['whole_body', 'bone', 'prostate', 'nodal_below_cib', 'nodal_above_cib', 'visceral']
@@ -841,6 +859,384 @@ def lesion_classifier(lesion_dir, # from output_dir
     return results
 
 
+## LIVER CLASSIFICATION ##
+
+## Helper functions ##
+
+def load_nifti(path, 
+                as_closest_canonical=True,
+                return_nib=False):
+    img = nib.load(path)
+    if as_closest_canonical:
+        img = nib.as_closest_canonical(img)
+    return img if return_nib else img.get_fdata().astype(np.float32)
+
+def pad(start, end, max_len, margin):
+    return max(0, start - margin), min(max_len, end + margin)
+
+def get_liver_bbox(liver_mask, margin=0):
+    nonzero = np.nonzero(liver_mask)
+    minz, maxz = np.min(nonzero[0]), np.max(nonzero[0]) + 1
+    miny, maxy = np.min(nonzero[1]), np.max(nonzero[1]) + 1
+    minx, maxx = np.min(nonzero[2]), np.max(nonzero[2]) + 1
+
+    if margin > 0:
+        minz, maxz = pad(minz, maxz, liver_mask.shape[0], margin)
+        miny, maxy = pad(miny, maxy, liver_mask.shape[1], margin)
+        minx, maxx = pad(minx, maxx, liver_mask.shape[2], margin)
+
+    return slice(minz, maxz), slice(miny, maxy), slice(minx, maxx)
+
+def resample_input_to_target(input_img, target_img):
+    resampled_img = resample_from_to(input_img, target_img, order=0)  # nearest neighbor interpolation
+    return resampled_img.get_fdata().astype(np.float32)
+
+def ensure_spacing_and_orientation(img, target_spacing=TARGET_SPACING, target_orient=TARGET_ORIENT):
+    """
+    Resample and reorient NIfTI image if spacing or orientation don't match the target.
+    Returns a NIfTI image with fixed spacing and orientation.
+    """
+    # Resample to target spacing if needed
+    spacing = img.header.get_zooms()
+    data = img.get_fdata()
+    affine = img.affine
+
+    if not np.allclose(spacing, target_spacing, atol=1e-3):
+        scale = np.array(spacing) / np.array(target_spacing)
+        new_shape = np.round(np.array(data.shape) * scale).astype(int)
+        data = zoom(data, scale, order=1)
+        affine = np.copy(affine)
+        np.fill_diagonal(affine, list(target_spacing) + [1])
+        img = nib.Nifti1Image(data, affine)
+
+    # Reorient to target orientation if needed
+    cur_orient = aff2axcodes(img.affine)
+    if cur_orient != target_orient:
+        trans = ornt_transform(axcodes2ornt(cur_orient), axcodes2ornt(target_orient))
+        data = apply_orientation(img.get_fdata(), trans)
+        img = nib.Nifti1Image(data, img.affine)
+
+    return img
+
+def pad_or_crop_to_match(batch, tolerance_ratio=1.75, verbose=False):
+    imgs, labels = zip(*batch)
+    
+    shapes = [img.shape[1:] for img in imgs]  # (C, D, H, W) → (D, H, W)
+    shape_areas = [np.prod(s) for s in shapes]
+
+    if verbose:
+        print(f"\nNew batch with {len(batch)} samples")
+        for i, s in enumerate(shapes):
+            print(f"  Sample {i}: shape = {s}, volume = {np.prod(s)}")
+
+    # Default: pad to largest shape
+    sorted_indices = sorted(range(len(shape_areas)), key=lambda i: shape_areas[i])
+    largest_shape = shapes[sorted_indices[-1]]
+
+    if len(shapes) == 1:
+        target_shape = largest_shape
+    else:
+        second_largest_shape = shapes[sorted_indices[-2]]
+        largest_vol = np.prod(largest_shape)
+        second_largest_vol = np.prod(second_largest_shape)
+
+        if largest_vol <= second_largest_vol * tolerance_ratio:
+            target_shape = largest_shape
+        else:
+            target_shape = second_largest_shape
+            if verbose:
+                print("Largest is outlier, using second-largest as target.")
+
+    target_d, target_h, target_w = target_shape
+
+    processed_imgs = []
+    for i, img in enumerate(imgs):
+        c, d, h, w = img.shape
+        crop_info = ""
+
+        # Crop if this sample is too big
+        if (d > target_d * tolerance_ratio or
+            h > target_h * tolerance_ratio or
+            w > target_w * tolerance_ratio):
+            start_d = (d - target_d) // 2
+            start_h = (h - target_h) // 2
+            start_w = (w - target_w) // 2
+            img = img[:, start_d:start_d+target_d,
+                            start_h:start_h+target_h,
+                            start_w:start_w+target_w]
+            crop_info = " (cropped)"
+            d, h, w = img.shape[1:]
+
+        # Padding to match
+        pad_d = target_d - d
+        pad_h = target_h - h
+        pad_w = target_w - w
+
+        padding = [
+            pad_w // 2, pad_w - pad_w // 2,
+            pad_h // 2, pad_h - pad_h // 2,
+            pad_d // 2, pad_d - pad_d // 2,
+        ]
+        img = F.pad(img, padding, mode='constant', value=0)
+        processed_imgs.append(img)
+
+        if verbose:
+            print(f"  → Sample {i} final shape: {img.shape}{crop_info}")
+
+    batch_imgs = torch.stack(processed_imgs)
+    batch_labels = torch.stack(labels)
+    return batch_imgs, batch_labels
+
+
+def classify_liver_disease(img_dir,
+                            organ_dir,
+                            model_path,
+                            device,
+                            margin=5,
+                            target_crop=None,
+                            verbose=False
+):
+    # Load model
+    model = DenseNet121(spatial_dims=3, in_channels=2, out_channels=1).to(device)
+    if torch.cuda.is_available():
+        checkpoint = torch.load(
+            model_path,
+            map_location=lambda storage, loc: storage.cuda(0),
+            weights_only=False
+        )
+    else:
+        checkpoint = torch.load(model_path, map_location="cpu")
+    model.load_state_dict(checkpoint['model_state_dict'])
+    model.eval()
+
+    threshold = checkpoint.get("best_thresh", 0.5)
+    transform = Compose([NormalizeIntensity(channel_wise=True)])
+
+    if verbose:
+        print(f"Loaded model from {model_path} with threshold {threshold:.4f}")
+        print(f"Using device: {device}")
+
+    # Find cases based on CT file pattern
+    ct_files = sorted([f for f in os.listdir(img_dir) if f.endswith("_0000.nii.gz")])
+    liver_classifications = {}
+
+    for ct_file in tqdm(ct_files, desc="Classifying liver disease"):
+        case_name = ct_file.replace("_0000.nii.gz", "")
+        ct_path = os.path.join(img_dir, ct_file)
+        pt_path = os.path.join(img_dir, f"{case_name}_0001.nii.gz")
+        seg_path = os.path.join(organ_dir, f"{case_name}_total.nii.gz")
+
+        # Check file existence
+        if not os.path.exists(pt_path):
+            if verbose:
+                print(f"Skipping {case_name}: Missing PET.")
+            continue
+        if not os.path.exists(seg_path):
+            if verbose:
+                print(f"Skipping {case_name}: Missing organ segmentation.")
+            continue
+
+        # Load and fix orientation/spacing
+        ct_img = ensure_spacing_and_orientation(nib.load(ct_path))
+        pt_img = ensure_spacing_and_orientation(nib.load(pt_path))
+        seg_img = ensure_spacing_and_orientation(nib.load(seg_path))
+
+        # Resample mask to CT space if needed
+        seg_data = resample_input_to_target(seg_img, ct_img) if seg_img.shape != ct_img.shape else seg_img.get_fdata().astype(np.float32)
+
+        # Extract liver mask
+        liver_mask = (seg_data == 5.0).astype(np.uint8)
+        if liver_mask.sum() == 0:
+            if verbose:
+                print(f"Skipping {case_name}: No liver voxels found.")
+            continue
+
+        # Resample PET to CT space if needed
+        if pt_img.shape != ct_img.shape:
+            pt_data = resample_input_to_target(ct_img, pt_img)
+            if verbose:
+                print(f"Resampled CT to match PET shape for {case_name}.")
+        else:
+            pt_data = pt_img.get_fdata().astype(np.float32)
+
+        # Crop to liver bounding box
+        z_s, y_s, x_s = get_liver_bbox(liver_mask, margin=margin)
+        ct_crop = ct_img.get_fdata()[z_s, y_s, x_s].astype(np.float32)
+        pt_crop = pt_data[z_s, y_s, x_s].astype(np.float32)
+
+        # Stack into channels (CT, PET)
+        img = np.stack([ct_crop, pt_crop], axis=0)  # shape: (2, D, H, W)
+
+        # Pad or crop to fixed size if requested
+        img_tensor = torch.tensor(img)
+        if target_crop is not None:
+            c, d, h, w = img_tensor.shape
+            td, th, tw = target_crop
+            pad_d = max(0, td - d)
+            pad_h = max(0, th - h)
+            pad_w = max(0, tw - w)
+            img_tensor = F.pad(img_tensor,
+                               [pad_w // 2, pad_w - pad_w // 2,
+                                pad_h // 2, pad_h - pad_h // 2,
+                                pad_d // 2, pad_d - pad_d // 2],
+                                mode='constant', value=0)
+            img_tensor = img_tensor[:, :td, :th, :tw]  # crop excess if needed
+
+        # Normalize channel-wise (same as training)
+        img_tensor = img_tensor.unsqueeze(0).to(device)  # (1, C, D, H, W)
+        img_tensor = transform(img_tensor)
+
+        if verbose:
+            print(f"Classifying {case_name} with shape {img_tensor.shape}...")
+
+        # Inference
+        with torch.no_grad():
+            logits = model(img_tensor).squeeze().item()
+            prob = torch.sigmoid(torch.tensor(logits)).item()
+            label = int(prob >= threshold)
+
+        liver_classifications[case_name] = label
+        if verbose:
+            print(f"{case_name}: prob={prob:.4f}, label={label}")
+
+    return liver_classifications
+
+def update_liver_mets(lesion_results_dict, 
+                        img_dir, 
+                        organ_dir, 
+                        model_path, 
+                        device,
+                        overwrite,
+                        verbose=False):
+    
+    first_case = next(iter(lesion_results_dict))
+    if "liver_mets" in lesion_results_dict[first_case].get("lesion_metrics", {}).get("patient", {}):
+        if not overwrite:
+            print("Liver mets already classified. Use --overwrite to re-run classification.")
+            return
+
+    liver_classifications = classify_liver_disease(img_dir,
+                                                    organ_dir,
+                                                    model_path,
+                                                    device,
+                                                    overwrite,
+                                                    verbose=verbose,
+                                                )
+
+    total_counts = {0: 0, 1: 0}  # For "All" summary
+
+    for case_name, case_data in lesion_results_dict.items():
+        if case_name in ("All", "SUV_threshold"):
+            continue
+
+        else:
+            # Check segmentation-based liver mets presence
+            seg_detected = any(
+                lesion.get("ts_name") == "liver"
+                for lesion in case_data.get("lesions", {}).values()
+            )
+
+            # Get classifier liver mets presence (default to 0 if missing)
+            classifier_detected = bool(liver_classifications.get(case_name, 0))
+
+            # Final decision: segmentation positive takes priority
+            final_call = 1 if seg_detected else int(classifier_detected)
+
+            # Save result
+            case_data.setdefault("lesion_metrics", {}).setdefault("patient", {})["liver_mets"] = final_call
+
+            # Track discrepancies
+            if seg_detected and not classifier_detected:
+                # Print only the notable discrepancy where seg says yes, classifier says no
+                print(f"[Warning] Liver mets discrepancy in {case_name}: "
+                    f"Segmentation contains liver mets, but the liver classifier has not identified liver disease. Case review is advised.")
+
+        # Count totals
+        total_counts[final_call] += 1
+
+    # Add summary counts to "All"
+    lesion_results_dict.setdefault("All", {}).setdefault("patient_metrics", {})
+    lesion_results_dict["All"]["patient_metrics"]["liver_mets"] = total_counts
+
+
+def collate_nomogram_info(lesion_results_dict, lesion_results_dir, 
+                            verbose=False, anonymize=False):
+    # Filter out summary entries
+    cases = [case for case in lesion_results_dict.keys() if case not in ("All", "SUV_threshold")]
+
+    # Function to detect date in case name segments
+    def extract_date_from_case(case_name):
+        for segment in case_name.split("_"):
+            for fmt in ("%Y%m%d", "%Y-%m-%d"):
+                try:
+                    return datetime.strptime(segment, fmt)
+                except ValueError:
+                    continue
+        return None  # No date found
+
+    # Prepare anonymization mapping if needed
+    anonymized_map = {}
+    if anonymize:
+        case_counter = 1
+        num_digits = len(str(len(cases)))  # zero-padding width
+        for case in cases:
+            date_obj = extract_date_from_case(case)
+            if date_obj:
+                anon_name = date_obj.strftime("%Y%m%d")
+            else:
+                anon_name = str(case_counter).zfill(num_digits)
+                case_counter += 1
+            anonymized_map[case] = anon_name
+
+    # Metrics column names
+    columns = ["Case", "Tumour_SUVmean", "Number_of_lesions", "Bone_mets", "Liver_mets"]
+
+    rows = []
+    for case in cases:
+        case_display = anonymized_map[case] if anonymize else case
+        case_data = lesion_results_dict[case]
+        
+        suvmean = case_data.get("lesion_metrics", {}).get("patient", {}).get("SUVmean", 0)
+        # Round to 4 significant figures
+        suvmean = float(f"{suvmean:.4g}") if isinstance(suvmean, (int, float)) else suvmean
+
+        number_lesions = case_data.get("lesion_metrics", {}).get("region", {}).get("whole_body", {}).get("lesion_count", 0)
+        bone_lesion_count = case_data.get("lesion_metrics", {}).get("region", {}).get("bone", {}).get("lesion_count", 0)
+        bone_mets = bool(bone_lesion_count > 0)
+        liver_mets = bool(case_data.get("lesion_metrics", {}).get("patient", {}).get("liver_mets", 0))
+
+        rows.append([case_display, suvmean, number_lesions, bone_mets, liver_mets, extract_date_from_case(case)])
+
+    # Sort by date if present
+    rows.sort(key=lambda x: (x[5] is None, x[5]))  # None dates go last
+    rows = [[case, suvmean, number_lesions, bone_mets, liver_mets] for case, suvmean, number_lesions, bone_mets, liver_mets, _ in rows]
+
+    # Save mapping if anonymizing
+    if anonymize:
+        map_path = os.path.join(lesion_results_dir, "anonymization_map.csv")
+        with open(map_path, "w", newline='') as f:
+            writer = csv.writer(f)
+            writer.writerow(["anon_ID", "case_name"])
+            for orig, anon in anonymized_map.items():
+                writer.writerow([anon, orig])
+        if verbose:
+            print(f"Anonymization map saved to {map_path}")
+        csv_name = "patient_disease_info_anon.csv"
+    else:
+        csv_name = "patient_disease_info.csv"
+
+    csv_path = os.path.join(lesion_results_dir, csv_name)
+    # Write CSV
+    os.makedirs(lesion_results_dir, exist_ok=True)
+    with open(csv_path, 'w', newline='') as f:
+        writer = csv.writer(f)
+        writer.writerow(columns)
+        writer.writerows(rows)
+
+    if verbose:
+        print(f"Nomogram info saved to {csv_path}")
+
+
 ## Main post-processing function ##
 def post_process(
         prepro_dir, # location of NIfTI images (either input_path or newly created _preprocessed path)
@@ -850,7 +1246,8 @@ def post_process(
         suv_thresh,
         fast,
         verbose,
-        overwrite
+        overwrite,
+        anonymize
     ):
     if suv_thresh > 0:
         # Apply SUV thresholding
@@ -882,23 +1279,43 @@ def post_process(
         logging.info(f"Created lesion classification directory at {shorten_path(lesion_results_dir)}")
     lesion_results_json_path = os.path.join(lesion_results_dir, lesion_results_json)
     if not overwrite and os.path.exists(lesion_results_json_path):
-        logging.info(f"Lesion results JSON already exists at {shorten_path(lesion_results_json_path)} and overwrite is False. Skipping lesion classification and metrics extraction.")
-        return
+        logging.info(f"Lesion results JSON already exists at {shorten_path(lesion_results_json_path)} and overwrite is False.")
+        # Load existing lesion results
+        with open(lesion_results_json_path, 'r') as f:
+            lesion_results_dict = json.load(f)
+        logging.info(f"Loaded existing lesion results from {lesion_results_json_path}")
     else:
         logging.info(f"Lesion results JSON will be saved to {shorten_path(lesion_results_json_path)}")
 
-    # Classify lesions (using generated organ segs) and extract biomarkers
-    lesion_results_dict = lesion_classifier(
-                            lesion_dir=output_dir,
-                            organ_dir=organ_dir,
-                            img_dir=prepro_dir,
-                            verbose=verbose,
-                            case_filter=None,
-                            overlap_threshold=0.5,
-                            organ_suffix="_total"
-                        )
+        # Classify lesions (using generated organ segs) and extract biomarkers
+        lesion_results_dict = lesion_classifier(
+                                lesion_dir=output_dir,
+                                organ_dir=organ_dir,
+                                img_dir=prepro_dir,
+                                verbose=verbose,
+                                case_filter=None,
+                                overlap_threshold=0.5,
+                                organ_suffix="_total"
+                            )
 
-    lesion_results_dict["SUV_threshold"] = suv_thresh
+        lesion_results_dict["SUV_threshold"] = suv_thresh
+
+    # Liver disease classification - [ADD THAT THIS IS ONLY DONE IF LIVER DISEASE NOT ALREADY CLASSIFIED]
+    # [UPDATE PATH TO USE MODEL FROM GITHUB]
+    liver_model_path = '/media/joelnoble/Pal_CT/PSMA-PET/Models/Liver_classifier/full_train/exp1_high_alpha/run_20250704-190755/best_model.pth'
+    # Update lesion results with liver mets classification
+    update_liver_mets(lesion_results_dict, 
+                        img_dir=prepro_dir,
+                        organ_dir=organ_dir,
+                        model_path=liver_model_path,
+                        device=device,
+                        overwrite=overwrite,
+                        verbose=verbose)
+    
+    # Collate nomogram info
+    collate_nomogram_info(lesion_results_dict, lesion_results_dir,
+                            verbose=verbose,
+                            anonymize=anonymize)
 
     with open(lesion_results_json_path, 'w') as f:
         json.dump(lesion_results_dict, f, indent=4)

@@ -27,8 +27,16 @@ def main():
     parser = argparse.ArgumentParser(description="PSMA PET/CT Auto-Segmentation Tool.")
     
     parser.add_argument(
-        "-i", "--input_dir", required=True, 
-        help="Path to directory containing PET/CT files."
+        "-i", "--input_dir", required=False, default=None,
+        help="Path to single directory containing PET/CT files in DICOM or NIfTI format."
+    )
+    parser.add_argument(
+        "-i_ct", "--input_ct", required=False, default=None,
+        help="Path to either a single CT NIfTI file or a directory containing CT files. If provided, this will be used instead of the input_dir for CT segmentation."
+    )
+    parser.add_argument(
+        "-i_pet", "--input_pet", required=False, default=None,
+        help="Path to either a single PET NIfTI file or a directory containing PET files. If provided, this will be used instead of the input_dir for PET segmentation."
     )
     parser.add_argument(
         "-o", "--output_dir", required=False, default=None,
@@ -78,15 +86,12 @@ def main():
         "--fast", required=False, action="store_true",
         help="Use fast mode for inference. This disables Test-Time Augmentation (TTA), and uses the --fast flag in TotalSegmentator for faster organ segmentation generation."
     )
-
     parser.add_argument(
         "--show_w", action="store_true", help="Show the GNU General Public License warranty disclaimer."
     )
-
     parser.add_argument(
         "--show_c", action="store_true", help="Show the GNU General Public License terms and conditions."
     )
-
     parser.add_argument(
         "--anonymize", action="store_true", default=False, help="Anonymize patient-identifiable data in the output results."
     )
@@ -101,6 +106,8 @@ def main():
 
     psma_segmentator(
                 input_dir = args.input_dir, 
+                input_ct = args.input_ct,
+                input_pet = args.input_pet,
                 output_dir = args.output_dir, 
                 token = args.personal_access_token, 
                 version= args.version,
