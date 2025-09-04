@@ -29,19 +29,6 @@ from psma_segmentator.inference import segmentate
 from psma_segmentator.pre_processing import pre_process, shorten_path
 from psma_segmentator.post_processing import post_process
 
-def validate_inputs_dirs(input_dir, input_ct, input_pet):
-    # Can't have nothing provided
-    if input_dir is None and (input_ct is None or input_pet is None):
-        raise ValueError("If -i is not provided, both -i_ct and -i_pet must be provided.")
-    # Can't have both input_dir and input_ct/input_pet
-    if input_dir is not None and (input_ct is not None or input_pet is not None):
-        raise ValueError("Cannot provide both -i and -i_ct/-i_pet.")
-    # If input_ct is provided, input_pet must also be provided, and vice versa
-    if input_ct is not None and input_pet is None:
-        raise ValueError("If -i_ct is provided, -i_pet must also be provided.")
-    if input_pet is not None and input_ct is None:
-        raise ValueError("If -i_pet is provided, -i_ct must also be provided.")
-
 def validate_device(device):
     if device is None:
         if torch.cuda.is_available():
@@ -60,6 +47,79 @@ def validate_device(device):
         return device
     else:
         raise ValueError(f"Invalid device string: {device}. Supported values are 'cpu', 'cuda', or 'cuda:n' (0 <= n <= num_gpus).")
+
+def validate_inputs_dirs(input_dir, input_ct, input_pet):
+    # Can't have nothing provided
+    if input_dir is None and (input_ct is None or input_pet is None):
+        raise ValueError("If -i is not provided, both -i_ct and -i_pet must be provided.")
+    # Can't have both input_dir and input_ct/input_pet
+    if input_dir is not None and (input_ct is not None or input_pet is not None):
+        raise ValueError("Cannot provide both -i and -i_ct/-i_pet.")
+    # If input_ct is provided, input_pet must also be provided, and vice versa
+    if input_ct is not None and input_pet is None:
+        raise ValueError("If -i_ct is provided, -i_pet must also be provided.")
+    if input_pet is not None and input_ct is None:
+        raise ValueError("If -i_pet is provided, -i_ct must also be provided.")
+
+    handling_dicoms = False
+    handling_subdir_niftis = False
+    handling_flattened_niftis = False
+    handling_direct_niftis = False
+
+    # Handle input_dir or input_ct/input_pet and assign output paths and flags
+    if input_dir is not None:
+        if not os.path.exists(input_dir):
+            raise FileNotFoundError(f"Input directory {input_dir} does not exist.")
+        input_path = Path(input_dir)
+
+        output_pred_dir = str(input_path.parent / f"{input_path.name}_outputs")
+        if any((f.suffix == ".dcm" or f.name.lower() == 'dicom') for f in input_path.rglob("*")):
+            handling_dicoms = True
+            print(f"DICOM files detected in input path {shorten_path(input_path)}. Processing accordingly.")
+            output_prepro_dir = str(input_path.parent / f"{input_path.name}_preprocessed")
+            os.makedirs(output_prepro_dir, exist_ok=True)
+        elif any(f.name.endswith((".nii", ".nii.gz")) for f in input_path.rglob("*")):
+            has_nifti_subdir = any(
+                sub.is_dir() and any(f.name.endswith((".nii", ".nii.gz")) for f in sub.rglob("*"))
+                for sub in input_path.iterdir()
+            )
+            if has_nifti_subdir:
+                output_prepro_dir = str(input_path.parent / f"{input_path.name}_preprocessed")
+                handling_subdir_niftis = True
+                print(f"NIfTI subdirectories detected in input path {shorten_path(input_path)}. Processing accordingly.")
+            else:
+                output_prepro_dir = str(input_path)
+                handling_flattened_niftis = True
+                print(f"NIfTI files detected in input path {shorten_path(input_path)}. Processing accordingly.")
+        else:
+            raise ValueError(f"Input path {input_path} contains no supported medical images.")
+    elif input_ct is not None and input_pet is not None:
+        handling_direct_niftis = True
+        input_path = None
+        print(f"NIfTI files detected in input paths {shorten_path(input_ct)} and {shorten_path(input_pet)}. Processing accordingly.")
+        if not os.path.exists(input_ct):
+            raise FileNotFoundError(f"Input CT path {input_ct} does not exist.")
+        if not os.path.exists(input_pet):
+            raise FileNotFoundError(f"Input PET path {input_pet} does not exist.")
+        if Path(input_ct).stem.endswith('_0000.nii'): # nii.gz ext
+            ct_base = Path(input_ct).stem.replace('_0000.nii', '')
+        elif Path(input_ct).stem.endswith('_0000'): # .nii ext
+            ct_base = Path(input_ct).stem.replace('_0000', '')
+        output_pred_dir = str(f"{Path(input_ct).parent}_{ct_base}_outputs")
+        output_prepro_dir = str(f"{Path(input_ct).parent}_{ct_base}_preprocessed") # make `None`?
+    else:
+        raise ValueError("Invalid input configuration.")
+    return {
+        "input_path": input_path,
+        "input_ct": input_ct,
+        "input_pet": input_pet,
+        "output_pred_dir": output_pred_dir,
+        "output_prepro_dir": output_prepro_dir,
+        "handling_dicoms": handling_dicoms,
+        "handling_subdir_niftis": handling_subdir_niftis,
+        "handling_flattened_niftis": handling_flattened_niftis,
+        "handling_direct_niftis": handling_direct_niftis
+    }
 
 def get_version_data(repo, version, headers):
     """
@@ -113,7 +173,7 @@ def psma_segmentator(weights_dir: str = None,
                         input_dir: str = None,
                         input_ct: str = None,
                         input_pet: str = None,
-                        output_dir: str = None, 
+                        output_pred_dir: str = None, 
                         token: str = None,
                         version: str = None,
                         device: str = "cuda" if torch.cuda.is_available() else "cpu",
@@ -165,60 +225,21 @@ This is free software, and you are welcome to redistribute it under certain cond
     # Validate device
     device = validate_device(device)
 
-    # Validate inputs
-    validate_inputs_dirs(input_dir, input_ct, input_pet)
-
-    if input_dir is not None:
-        if not os.path.exists(input_dir):
-            raise FileNotFoundError(f"Input directory {input_dir} does not exist.")
-        input_path = Path(input_dir)
-
-        if output_dir is None:
-            output_dir = str(input_path.parent / f"{input_path.name}_outputs")
-            print(f"\nOutput directory not specified. Using: {output_dir}")
-        
-        nifti_subdirs = False 
-        if any((f.suffix == ".dcm" or f.name.lower() == 'dicom') for f in input_path.rglob("*")):
-            print(f"Input path {shorten_path(input_path)} contains DICOM files.")
-            handling_dicom = True
-            output_prepro_dir = str(input_path.parent / f"{input_path.name}_preprocessed")
-            os.makedirs(output_prepro_dir, exist_ok=True)
-
-        elif any(f.name.endswith((".nii", ".nii.gz")) for f in input_path.rglob("*")):
-            print(f"Input path {shorten_path(input_path)} contains NIfTI files.")
-            handling_dicom = False
-
-            has_nifti_subdir = any(
-                sub.is_dir() and any(f.name.endswith((".nii", ".nii.gz")) for f in sub.rglob("*"))
-                for sub in input_path.iterdir()
-            )
-            
-            if has_nifti_subdir:
-                print("NIfTI files are organized in subdirectories.")
-                output_prepro_dir = str(input_path.parent / f"{input_path.name}_preprocessed")
-                nifti_subdirs = True
-            else:
-                print("NIfTI files are flattened in the input directory.")
-                output_prepro_dir = str(input_path)
-
-        else:
-            raise ValueError(f"Input path {shorten_path(input_path)} contains no supported medical images.")
-    elif input_ct is not None and input_pet is not None:
-        if not os.path.exists(input_ct):
-            raise FileNotFoundError(f"Input CT path {input_ct} does not exist.")
-        if not os.path.exists(input_pet):
-            raise FileNotFoundError(f"Input PET path {input_pet} does not exist.")
-        input_path = None
-        handling_dicom = False
-        nifti_subdirs = False
-        if output_dir is None:
-            output_dir = str(Path(input_ct).parent / f"{Path(input_ct).stem}_outputs")
-            print(f"\nOutput directory not specified. Using: {output_dir} (based on input_ct path)")
-        output_prepro_dir = str(Path(input_ct).parent / f"{Path(input_ct).stem}_preprocessed")
-
-    # Create output directory if it doesn't exist
-    if not os.path.exists(output_dir) and not preprocess_only:
-        os.makedirs(output_dir, exist_ok=True)
+    # Validate and handle inputs
+    input_info = validate_inputs_dirs(input_dir, input_ct, input_pet)
+    input_path = input_info["input_path"]
+    input_ct = input_info["input_ct"]
+    input_pet = input_info["input_pet"]
+    handling_dicoms = input_info["handling_dicoms"]
+    handling_subdir_niftis = input_info["handling_subdir_niftis"]
+    handling_flattened_niftis = input_info["handling_flattened_niftis"]
+    handling_direct_niftis = input_info["handling_direct_niftis"]
+    # If output_dir is not specified, use the one from input_info
+    if output_pred_dir is None and not preprocess_only:
+        output_pred_dir = input_info["output_pred_dir"]
+        os.makedirs(output_pred_dir, exist_ok=True)
+        print(f"\nOutput directory not specified. Using: {output_pred_dir}")
+    output_prepro_dir = input_info["output_prepro_dir"]
 
     if incl_rtstructs == True and shutil.which("plastimatch") is None:
         raise EnvironmentError(
@@ -229,7 +250,6 @@ This is free software, and you are welcome to redistribute it under certain cond
         "Authorization": f"Bearer {token}",
         "User-Agent": "PSMASegmentator"
     }
-
     try:
         version, release_data = get_version_data(
                             repo="UWA-Medical-Physics-Research-Group/PSMASegmentator",
@@ -251,23 +271,25 @@ This is free software, and you are welcome to redistribute it under certain cond
     
     if not postprocess_only:
         # Preprocess the input files
-        list_of_lists = pre_process(input_path, 
-                                    input_ct,
-                                    input_pet,
-                                    incl_rtstructs, 
-                                    output_pred_dir=output_dir,
-                                    output_prepro_dir=output_prepro_dir,
-                                    handling_dicom=handling_dicom,
-                                    nifti_subdirs=nifti_subdirs,
-                                    verbose=verbose, overwrite=overwrite)
+        list_of_lists_prepro, list_of_lists_pred = pre_process(input_path, 
+                                                    input_ct,
+                                                    input_pet,
+                                                    incl_rtstructs, 
+                                                    output_pred_dir=output_pred_dir,
+                                                    output_prepro_dir=output_prepro_dir,
+                                                    handling_dicoms=handling_dicoms,
+                                                    handling_subdir_niftis=handling_subdir_niftis,
+                                                    handling_flattened_niftis=handling_flattened_niftis,
+                                                    handling_direct_niftis=handling_direct_niftis,
+                                                    verbose=verbose, overwrite=overwrite)
         if preprocess_only:
             print("\nPre-processing (only) complete. No segmentation performed.")
             return
                 
         segmentate(
             model_folder=weights_dir,
-            list_of_lists=list_of_lists,
-            output_dir=output_dir,
+            list_of_lists_pred=list_of_lists_pred,
+            output_pred_dir=output_pred_dir,
             device=device,
             use_tta=not fast,  # Use TTA unless fast mode is specified 
             verbose=verbose
@@ -275,23 +297,24 @@ This is free software, and you are welcome to redistribute it under certain cond
     else:
         print("\nSkipping pre-processing and segmentation. Only post-processing will be performed.")
         # Check if output dir is empty (i.e., nothing to post-process)
-        if not os.listdir(output_dir):
-            print(f"\nERROR: Output directory {output_dir} is empty. "
+        if not os.listdir(output_pred_dir):
+            print(f"\nERROR: Output directory {output_pred_dir} is empty. "
                 "Please run pre-processing and segmentation first.")
             raise SystemExit(1)
 
     # Post-process the segmentation results
-    print(f"\nInitiating post-processing of segmentations in {shorten_path(output_dir)}...")
+    print(f"\nInitiating post-processing of segmentations in {shorten_path(output_pred_dir)}...")
     post_process(
-        prepro_dir=output_prepro_dir,
-        output_dir=output_dir,
+        # output_prepro_dir=output_prepro_dir,
+        list_of_lists_prepro=list_of_lists_prepro,
+        output_pred_dir=output_pred_dir,
         organ_dir=organ_dir,
         device=device,
         suv_thresh=suv_thresh,
         fast=fast,
         verbose=verbose,
         overwrite=overwrite,
-        # anonymize=anonymize
+        anonymize=anonymize
     )
 
     print("\nPSMA segmentation pipeline complete.")

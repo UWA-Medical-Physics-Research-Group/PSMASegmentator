@@ -76,182 +76,157 @@ def save_middle_slice_png(np_volume, nifti_path,
     if verbose:
         print(f"Saved middle slice PNG ({tag}) to: {out_path}")
 
+def resample_ct_to_pet(ct_path, pt_path, verbose):
+    ct_img = sitk.ReadImage(ct_path)
+    pt_img = sitk.ReadImage(pt_path)
+    resampled_ct = sitk.Resample(ct_img, pt_img)
+    sitk.WriteImage(resampled_ct, ct_path)
+
+    # Confirm resampling
+    resampled_ct = sitk.ReadImage(ct_path)
+    if resampled_ct.GetSize() != pt_img.GetSize():
+        raise RuntimeError(f"Resampling CT ({shorten_path(ct_path)}) to PET ({shorten_path(pt_path)}) failed: CT size {resampled_ct.GetSize()} does not match PET size {pt_img.GetSize()}")
+
+    if verbose:
+        print(f"Resampled CT saved at {shorten_path(ct_path)} with shape {resampled_ct.GetSize()} to match PET shape {pt_img.GetSize()}")
+        print(f"PET path: {shorten_path(pt_path)}")
 
 # MAIN PRE-PROCESSING FUNCTION
 
 def pre_process(input_path, 
+                input_ct,
+                input_pet,
                 incl_rtstructs, 
                 output_pred_dir,
                 output_prepro_dir,
-                handling_dicom,
-                nifti_subdirs,
+                handling_dicoms,
+                handling_subdir_niftis,
+                handling_flattened_niftis,
+                handling_direct_niftis,
                 verbose, 
                 overwrite):
 
-    case_dirs = [d for d in input_path.iterdir() if d.is_dir()]
-    
-    if case_dirs:
+    if handling_dicoms or handling_subdir_niftis:
+        case_dirs = [d for d in input_path.iterdir() if d.is_dir()] if input_path is not None else []
+        if not case_dirs:
+            raise ValueError(f"No case directories found in {input_path}")
+
         output_dir_structs = (input_path.parent / f"{input_path.name}_structs") if incl_rtstructs else None
         output_dir_gts = (input_path.parent / f"{input_path.name}_gt_segmentations") if incl_rtstructs else None
         if incl_rtstructs:
             output_dir_structs.mkdir(parents=True, exist_ok=True)
             output_dir_gts.mkdir(parents=True, exist_ok=True)
 
-        # Filter to only cases needing prediction
-        if not overwrite:
-            case_dirs_to_predict = find_predicted(case_dirs, 
-                                                    output_pred_dir, 
-                                                    mode='case_dirs', 
-                                                    verbose=verbose)
-        else:
-            if verbose:
-                print(f"Overwriting enabled. All cases will be considered for pre-processing and inference, even if they have existing predictions in {shorten_path(output_pred_dir)}.")
-            case_dirs_to_predict = case_dirs
-
-        if not case_dirs_to_predict:
-            print("All cases have existing predictions. Nothing to pre-process or infer.")
-            return []
-        
-        # Among cases needing prediction, check which are already preprocessed
-        if not overwrite:
-            not_preprocessed, preprocessed = find_preprocessed(case_dirs_to_predict, 
-                                                                output_prepro_dir, 
-                                                                incl_rtstructs, 
-                                                                output_dir_gts, 
-                                                                nifti_subdirs, 
+        # Unified logic for both DICOM and NIfTI subdir cases
+        not_preprocessed_case_dirs, list_of_lists_already_prepro = find_preprocessed(case_dirs,
+                                                                output_prepro_dir,
+                                                                incl_rtstructs,
+                                                                output_dir_gts,
                                                                 verbose)
+        print(f"not_preprocessed_case_dirs: {not_preprocessed_case_dirs}; list_of_lists_already_prepro: {list_of_lists_already_prepro};")
+
+        # 3. For post-processing, use all preprocessed cases
+        if not_preprocessed_case_dirs:
+            # Only process cases not yet preprocessed
+            if handling_dicoms:
+                list_of_lists_newly_prepro = handle_dicoms(not_preprocessed_case_dirs,
+                                                output_prepro_dir,
+                                                incl_rtstructs,
+                                                output_dir_structs,
+                                                output_dir_gts,
+                                                verbose,
+                                                overwrite,
+                                                delete_structs_dir=False)
+            elif handling_subdir_niftis:
+                list_of_lists_newly_prepro = handle_subdir_niftis(not_preprocessed_case_dirs,
+                                                            output_prepro_dir,
+                                                            incl_rtstructs,
+                                                            output_dir_gts,
+                                                            verbose)
+        else:
+            list_of_lists_newly_prepro = []
+        print(f"newly_preprocessed: {list_of_lists_newly_prepro};")
+        list_of_lists_prepro = list_of_lists_already_prepro + list_of_lists_newly_prepro
+
+        # 4. For prediction, process only cases needing prediction
+        if not overwrite:
+            list_of_lists_pred = find_predicted(list_of_lists_prepro, 
+                                                output_pred_dir, 
+                                                verbose=verbose)
         else:
             if verbose:
-                print(f"Overwriting enabled. All cases will be considered not preprocessed, even if they're in {shorten_path(output_prepro_dir)}.")
-            not_preprocessed, preprocessed = case_dirs_to_predict, [] # If overwriting, all are considered not preprocessed
-            
-        print(f"Not preprocessed cases: {not_preprocessed}")
-        print(f"Already preprocessed cases: {preprocessed}")
+                print(f"Overwriting enabled. All cases will be considered for inference, even if they have existing predictions in {shorten_path(output_pred_dir)}.")
+            list_of_lists_pred = list_of_lists_prepro
+        if not list_of_lists_pred:
+            print("All cases have existing predictions. Nothing to infer.")
+        return list_of_lists_prepro, list_of_lists_pred
 
-        # Handle DICOM input
-        if handling_dicom:
-            newly_preprocessed = handle_dicoms(not_preprocessed,
-                                                output_prepro_dir, 
-                                                incl_rtstructs, 
-                                                output_dir_structs, 
-                                                output_dir_gts, 
-                                                verbose, overwrite, 
-                                                delete_structs_dir=False)
-            print(f"Newly preprocessed cases: {newly_preprocessed}")
-            print(f"Preprocessed cases: {preprocessed}")
-            return preprocessed + (newly_preprocessed or [])
-        elif nifti_subdirs:
-            return preprocessed + not_preprocessed
-    elif not handling_dicom and not nifti_subdirs:
+    elif handling_flattened_niftis:
         # Handle flattened NIfTI input
         nii_files = list(input_path.rglob("*.nii.gz"))
-        # print(f"nifti_files: {nii_files}")
-        if not overwrite: # only check for predicted NIfTI files if not overwriting
-            nii_files = find_predicted(nii_files, output_pred_dir,
-                                        mode='nii_files', verbose=verbose)
+        # Find all preprocessed NIfTI pairs
+        list_of_lists_prepro = handle_flattened_niftis(nii_files, 
+                                                        output_prepro_dir, 
+                                                        overwrite, 
+                                                        verbose)
+        # Find NIfTI files needing prediction
+        if not overwrite:
+            list_of_lists_pred = find_predicted(list_of_lists_prepro, 
+                                                output_pred_dir,
+                                                verbose=verbose)
         else:
             if verbose:
                 print(f"Overwriting enabled. All NIfTI files will be considered for pre-processing and inference, even if they have existing predictions in {shorten_path(output_pred_dir)}.")
-        if nii_files:
-            newly_processed = handle_flattened_niftis(nii_files, 
-                                                            output_prepro_dir, 
-                                                            overwrite, verbose)
-            # print(f"Newly processed NIfTI files: {newly_processed}")
-            return newly_processed # + preprocessed
+            list_of_lists_pred = list_of_lists_prepro
+        return list_of_lists_prepro, list_of_lists_pred
+    
+    # Handle direct input_ct and input_pet file paths
+    elif handling_direct_niftis:
+        ct_path = Path(input_ct)
+        pt_path = Path(input_pet)
+        base = ct_path.stem.rsplit('_000', 1)[0] if '_000' in ct_path.stem else ct_path.stem
+        ct_img = sitk.ReadImage(str(ct_path))
+        pt_img = sitk.ReadImage(str(pt_path))
+        # Check if CT and PET sizes match
+        if ct_img.GetSize() != pt_img.GetSize():
+            print(f"CT and PET sizes ({ct_img.GetSize()} | {pt_img.GetSize()}) do not match for {base}. Resampling required.")
+            resample_ct_to_pet(ct_path, pt_path, verbose=True)
+        # Always include in preprocessed list
+        list_of_lists_prepro = [[str(ct_path), str(pt_path)]]
+        # Only include in pred list if prediction does not exist or overwrite is True
+        pred_file = Path(output_pred_dir) / f"{base}.nii.gz"
+        if pred_file.exists() and not overwrite:
+            print(f"Skipping {base}: prediction exists at {shorten_path(pred_file)}.")
+            list_of_lists_pred = []
         else:
-            print("All NIfTI output files already exist and/or overwrite = False. Nothing to predict.")
-            return []
+            list_of_lists_pred = [[str(ct_path), str(pt_path)]]
+        return list_of_lists_prepro, list_of_lists_pred
 
-    raise ValueError(f"No valid NIfTI or DICOM files found in {input_path}.")
+    else:
+        raise ValueError(f"No valid NIfTI or DICOM files found in {input_path if input_path is not None else '[input_ct/input_pet]'}.")
 
 
 # ANTI-REDUNDANCY FUNCTIONS
-
-def find_predicted(input_dir, output_pred_dir, mode, verbose=True):
-    remaining = [] # List of files/directories that need to be processed
-
-    if mode == "case_dirs": # input_dir is case_dirs
-        for case_dir in input_dir:
-            case_name = case_dir.name
-            pred_file = Path(os.path.join(output_pred_dir, f"{case_name}.nii.gz"))
-            if pred_file.exists():
-                print(f"Skipping {case_name}: prediction exists at {shorten_path(pred_file)}.")
-                continue
-            remaining.append(case_dir)
-
-    elif mode == "nii_files":
-        for nii_file in input_dir: # input_dir is nii_files
-            case_name = os.path.basename(nii_file).split("_000")[0]
-            pred_file = Path(os.path.join(output_pred_dir, f"{case_name}.nii.gz"))
-            if pred_file.exists():
-                print(f"Skipping {case_name}: prediction exists at {shorten_path(pred_file)}.")
-                continue
-            else:
-                if verbose:
-                    print(f"Processing {case_name}: prediction does not exist at {shorten_path(pred_file)}.")
-            remaining.append(nii_file)
-
-    return remaining
-
 
 def find_preprocessed(case_dirs, 
                         output_prepro_dir, 
                         incl_rtstructs, 
                         output_dir_gts, 
-                        nifti_subdirs, 
                         verbose):
 
     if not case_dirs:
         print(f"No case directories to check.")
         return []
 
-    not_preprocessed = []
-    preprocessed = []
+    not_preprocessed_case_dirs = []
+    list_of_lists_already_prepro = []
 
     for case_dir in case_dirs:
         case_name = case_dir.name
         ct_path = Path(output_prepro_dir) / f"{case_name}_0000.nii.gz"
         pt_path = Path(output_prepro_dir) / f"{case_name}_0001.nii.gz"
 
-        if nifti_subdirs:
-            nifti_files = list(case_dir.rglob("*.nii")) + list(case_dir.rglob("*.nii.gz"))
-
-            def find_modality(modality):
-                for f in nifti_files:
-                    if modality in f.name.lower() and not "resampled" in f.name.lower():
-                        return f
-                for f in nifti_files:
-                    if modality in f.name.lower():
-                        return f
-                return None
-
-            ct_file = find_modality("ct")
-            pt_file = find_modality("pt")
-
-            # Ensure output dir exists
-            ct_path.parent.mkdir(parents=True, exist_ok=True)
-
-            if ct_file is not None:
-                if not ct_path.exists():
-                    if verbose:
-                        print(f"Copying CT: {ct_file} → {ct_path}")
-                    shutil.copy(ct_file, ct_path)
-            if pt_file is not None:
-                if not pt_path.exists():
-                    if verbose:
-                        print(f"Copying PT: {pt_file} → {pt_path}")
-                    shutil.copy(pt_file, pt_path)
-
-            # Resample CT to PET if sizes differ [SHOULD SPLIT THIS FUNCTION OUT]
-            if ct_file and pt_file:
-                ct_img = sitk.ReadImage(str(ct_path))
-                pt_img = sitk.ReadImage(str(pt_path))
-                if ct_img.GetSize() != pt_img.GetSize():
-                    if verbose:
-                        print(f"CT and PET sizes ({ct_img.GetSize()} | {pt_img.GetSize()}) do not match for {case_name}. Resampling required.")
-                    resample_ct_to_pet(ct_path, pt_path, verbose=True)
-
-        ct_done, pt_done, gt_done = already_preprocessed(
+        ct_done, pt_done, gt_done = confirm_already_preprocessed(
             ct_path, pt_path, output_dir_gts,
             case_name, incl_rtstructs, verbose
         )
@@ -259,20 +234,16 @@ def find_preprocessed(case_dirs,
         if not (ct_done and pt_done and (not incl_rtstructs or gt_done)):
             if verbose:
                 print(f"Case {case_name} is NOT fully preprocessed. Will process.")
-            if nifti_subdirs:
-                not_preprocessed.append([str(ct_path), str(pt_path)])
-            else:
-                not_preprocessed.append(case_dir) # retain full case_dir for DICOM handling aber der nifti ist alles klar, mein schwester
+            not_preprocessed_case_dirs.append(case_dir)
         else:
             if verbose:
                 print(f"Case {case_name} is fully preprocessed. Skipping.")
-            preprocessed.append([str(ct_path), str(pt_path)])
+            list_of_lists_already_prepro.append([str(ct_path), str(pt_path)])
 
-    return not_preprocessed, preprocessed
+    return not_preprocessed_case_dirs, list_of_lists_already_prepro
 
-
-def already_preprocessed(ct_path, pt_path, output_dir_gts, 
-                            case_name, incl_rtstructs, verbose=False):
+def confirm_already_preprocessed(ct_path, pt_path, output_dir_gts, 
+                                case_name, incl_rtstructs, verbose=False):
     ct_done = ct_path.exists()
     pt_done = pt_path.exists()
     gt_done = False
@@ -288,23 +259,41 @@ def already_preprocessed(ct_path, pt_path, output_dir_gts,
 
     return ct_done, pt_done, gt_done
 
+def find_predicted(list_of_lists_prepro, output_pred_dir, verbose=True):
+    """
+    Given list_of_lists_prepro ([[ct_path, pt_path], ...]), return only those pairs for which prediction does not exist.
+    """
+    list_of_lists_pred = [] # collate pairs STILL NEEDING prediction
+    for pair in list_of_lists_prepro:
+        ct_path = Path(pair[0])
+        case_name = ct_path.stem.rsplit('_000', 1)[0] if '_000' in ct_path.stem else ct_path.stem
+        pred_file = Path(output_pred_dir) / f"{case_name}.nii.gz"
+        if pred_file.exists():
+            if verbose:
+                print(f"Skipping {case_name}: prediction exists at {shorten_path(pred_file)}.")
+            continue
+        list_of_lists_pred.append(pair)
+    return list_of_lists_pred
 
 # DICOM HANDLING
 
 def handle_dicoms(case_dirs,
                     # input_path, 
                     output_prepro_dir,
-                    incl_rtstructs, output_dir_structs, output_dir_gts, 
-                    verbose, overwrite, delete_structs_dir):
+                    incl_rtstructs, 
+                    output_dir_structs, 
+                    output_dir_gts, 
+                    verbose, 
+                    overwrite, 
+                    delete_structs_dir):
     # Make dir to store pre-processed NIfTIs in
-    os.makedirs(output_prepro_dir, exist_ok=True)
     case_dict = defaultdict(list)
 
     if not case_dirs:
         print(f"No case directories found. Nothing to process.")
         return []
 
-    for case_dir in tqdm(case_dirs, desc="Pre-processing cases"):
+    for case_dir in tqdm(case_dirs, desc="Pre-processing DICOM cases"):
         # print(f"Processing case directory: {case_dir}")
         case_name = case_dir.name
         if verbose:
@@ -325,7 +314,7 @@ def handle_dicoms(case_dirs,
             ct_path, pt_path = Path(f"{output_prepro_dir}/{case_name}_0000.nii.gz"), Path(f"{output_prepro_dir}/{case_name}_0001.nii.gz")
             # Regardless of further processing, add paths to case_dict for later inference
 
-            ct_done, pt_done, gt_done = already_preprocessed(ct_path, pt_path, output_dir_gts, 
+            ct_done, pt_done, gt_done = confirm_already_preprocessed(ct_path, pt_path, output_dir_gts, 
                                                                     case_name, incl_rtstructs, verbose)
 
             # Skip if all required parts are done
@@ -338,10 +327,18 @@ def handle_dicoms(case_dirs,
             sizes = {}
 
             if 'CT' in dicom_series and not ct_done:
-                process_dicom(dicom_series, 'CT', ct_path, sizes)
+                process_dicom(dicom_series, 
+                                'CT', 
+                                ct_path, 
+                                sizes,
+                                verbose)
 
             if 'PT' in dicom_series and not pt_done:
-                process_dicom(dicom_series, 'PT', pt_path, sizes)
+                process_dicom(dicom_series, 
+                                'PT', 
+                                pt_path, 
+                                sizes,
+                                verbose)
 
             if incl_rtstructs and not gt_done: # and 'RTSTRUCT' in dicom_series
                 process_rtstruct(dicom_series, study_dir, case_name, 
@@ -366,10 +363,14 @@ def handle_dicoms(case_dirs,
         print(f"No valid PET/CT files collated from filtered case_dirs. Nothing to process.")
     return list_of_lists
 
-
-def dicom_to_nifti(dicom_dir: str, nifti_path: str, is_pet: bool, ds_for_suv):
+def dicom_to_nifti(dicom_dir: str,
+                    nifti_path: str,
+                    is_pet: bool,
+                    ds_for_suv,
+                    verbose: bool):
     if is_pet:
-        print(f"[INFO] Converting PET DICOM to NIfTI: {nifti_path}")
+        if verbose:
+            print(f"Converting PET DICOM to NIfTI: {nifti_path}")
         reader = sitk.ImageSeriesReader()
         dicom_series = reader.GetGDCMSeriesFileNames(str(dicom_dir))
         reader.SetFileNames(dicom_series)
@@ -383,7 +384,8 @@ def dicom_to_nifti(dicom_dir: str, nifti_path: str, is_pet: bool, ds_for_suv):
         return volume.GetSize()
 
     else:
-        print(f"[INFO] Converting CT DICOM to NIfTI: {nifti_path}")
+        if verbose:
+            print(f"[Converting CT DICOM to NIfTI: {nifti_path}")
         # CT Manual stacking with HU rescaling and direction fix
         dicom_files = [os.path.join(dicom_dir, f) for f in os.listdir(dicom_dir)
                         if not f.startswith('.') and os.path.isfile(os.path.join(dicom_dir, f))]
@@ -395,11 +397,10 @@ def dicom_to_nifti(dicom_dir: str, nifti_path: str, is_pet: bool, ds_for_suv):
                 z = float(ds.ImagePositionPatient[2])
                 dicoms.append((z, ds))
             except Exception as e:
-                print(f"[WARNING] Skipping {f}: {e}")
+                print(f"WARNING: Skipping {f}: {e}")
 
         dicoms.sort(key=lambda x: x[0])
         sorted_ds = [d[1] for d in dicoms]
-        # print(f"[DEBUG] Sorted {len(sorted_ds)} CT slices by Z")
 
         # Apply HU rescale
         hu_slices = []
@@ -436,16 +437,24 @@ def dicom_to_nifti(dicom_dir: str, nifti_path: str, is_pet: bool, ds_for_suv):
         volume_sitk.SetDirection(direction.tolist())
 
         sitk.WriteImage(volume_sitk, nifti_path)
-        print(f"[INFO] Wrote CT NIfTI to: {nifti_path}")
+        if verbose:
+            print(f"Wrote CT NIfTI to: {nifti_path}")
         return volume_sitk.GetSize()
 
-def process_dicom(dicom_series, modality, 
-                    nifti_path, sizes):
+def process_dicom(dicom_series, 
+                    modality, 
+                    nifti_path, 
+                    sizes,
+                    verbose):
     dicom_dir = dicom_series[modality][0]
     ds = dicom_series[modality][1]
     is_pet = modality == "PT"
-    
-    size = dicom_to_nifti(dicom_dir, nifti_path, is_pet, ds)
+
+    size = dicom_to_nifti(dicom_dir,
+                            nifti_path, 
+                            is_pet, 
+                            ds, 
+                            verbose)
     sizes[modality] = size
 
 
@@ -546,9 +555,83 @@ def plastimatch_rtstruct_to_nifti(ct_dcm, rt_dcm, output_dir_struct,
         if original_filename != new_name:
             file.rename(new_path)
 
+# NIfTI HANDLING
 
-def handle_flattened_niftis(nii_files, output_prepro_dir, 
-                                    overwrite, verbose):
+def handle_subdir_niftis(case_dirs, 
+                        output_prepro_dir, 
+                        incl_rtstructs, 
+                        output_dir_gts, 
+                        verbose):
+    """
+    Handles NIfTI subdir case for find_preprocessed logic.
+    """
+    case_dict = defaultdict(list)
+
+    for case_dir in tqdm(case_dirs, desc="Pre-processing NIfTI subdir cases"):
+        case_name = case_dir.name
+        ct_path = Path(output_prepro_dir) / f"{case_name}_0000.nii.gz"
+        pt_path = Path(output_prepro_dir) / f"{case_name}_0001.nii.gz"
+
+        nifti_files = list(case_dir.rglob("*.nii")) + list(case_dir.rglob("*.nii.gz"))
+
+        # Improved CT/PT identification
+        ct_candidates = []
+        pt_candidates = []
+        for f in nifti_files:
+            fname = f.name.lower()
+            # CT candidates
+            if (fname.endswith("_0000.nii.gz") or fname.endswith("_0000.nii")) or ("ct" in fname and not "resampled" in fname):
+                ct_candidates.append(f)
+            # PT candidates
+            if (fname.endswith("_0001.nii.gz") or fname.endswith("_0001.nii")) or (("pt" in fname or "pet" in fname) and not "resampled" in fname):
+                pt_candidates.append(f)
+
+        # Prefer most specific match
+        ct_file = ct_candidates[0] if ct_candidates else None
+        pt_file = pt_candidates[0] if pt_candidates else None
+        print(f"Identified CT: {ct_file}, PET: {pt_file}")
+
+        # Ensure output dir exists
+        ct_path.parent.mkdir(parents=True, exist_ok=True)
+
+        if ct_file is not None:
+            if not ct_path.exists():
+                if verbose:
+                    print(f"Copying CT: {ct_file} → {ct_path}")
+                shutil.copy(ct_file, ct_path)
+        if pt_file is not None:
+            if not pt_path.exists():
+                if verbose:
+                    print(f"Copying PT: {pt_file} → {pt_path}")
+                shutil.copy(pt_file, pt_path)
+
+        # Resample CT to PET if sizes differ
+        if ct_file and pt_file:
+            ct_img = sitk.ReadImage(str(ct_path))
+            pt_img = sitk.ReadImage(str(pt_path))
+            if ct_img.GetSize() != pt_img.GetSize():
+                if verbose:
+                    print(f"CT and PET sizes ({ct_img.GetSize()} | {pt_img.GetSize()}) do not match for {case_name}. Resampling required.")
+                resample_ct_to_pet(ct_path, pt_path, verbose=True)
+
+        ct_done, pt_done, gt_done = confirm_already_preprocessed(
+                                        ct_path, pt_path, output_dir_gts,
+                                        case_name, incl_rtstructs, verbose
+                                    )
+
+        # Only add if both CT and PT are present and exist on disk
+        if ct_file and pt_file and ct_path.exists() and pt_path.exists():
+            case_dict[case_name].extend([str(ct_path), str(pt_path)])
+
+    list_of_lists = [sorted(files) for files in case_dict.values() if len(files) == 2]
+    if not list_of_lists:
+        print(f"No valid CT/PET NIfTI pairs collated from filtered case_dirs. Nothing to process.")
+    return list_of_lists
+
+def handle_flattened_niftis(nii_files,
+                            output_prepro_dir,
+                            overwrite, 
+                            verbose):
     case_dict = defaultdict(list)
     print(f"Existing NIfTI files found. Collating and using these directly for inference.")
 
@@ -577,26 +660,10 @@ def handle_flattened_niftis(nii_files, output_prepro_dir,
             continue
         case_dict[base].append(str(f))
 
-    list_of_lists = [sorted(files) for files in case_dict.values()]
-    if not list_of_lists:
+    list_of_lists_prepro = [sorted(files) for files in case_dict.values()]
+    if not list_of_lists_prepro:
         print(f"All pre-processed NIfTIs already exist in {output_prepro_dir}. Nothing to process.")
-    return list_of_lists
-
-
-def resample_ct_to_pet(ct_path, pt_path, verbose):
-    ct_img = sitk.ReadImage(ct_path)
-    pt_img = sitk.ReadImage(pt_path)
-    resampled_ct = sitk.Resample(ct_img, pt_img)
-    sitk.WriteImage(resampled_ct, ct_path)
-
-    # Confirm resampling
-    resampled_ct = sitk.ReadImage(ct_path)
-    if resampled_ct.GetSize() != pt_img.GetSize():
-        raise RuntimeError(f"Resampling CT ({shorten_path(ct_path)}) to PET ({shorten_path(pt_path)}) failed: CT size {resampled_ct.GetSize()} does not match PET size {pt_img.GetSize()}")
-
-    if verbose:
-        print(f"Resampled CT saved at {shorten_path(ct_path)} with shape {resampled_ct.GetSize()} to match PET shape {pt_img.GetSize()}")
-        print(f"PET path: {shorten_path(pt_path)}")
+    return list_of_lists_prepro
 
 
 # MODALITY AND PET VALIDATION

@@ -108,7 +108,7 @@ def main():
                 input_dir = args.input_dir, 
                 input_ct = args.input_ct,
                 input_pet = args.input_pet,
-                output_dir = args.output_dir, 
+                output_pred_dir = args.output_dir, 
                 token = args.personal_access_token, 
                 version= args.version,
                 device = args.device,

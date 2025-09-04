@@ -394,79 +394,64 @@ def expand_segmentation(predicted_image, pet_image,
 
 
 ## Generate organ segmentations using TotalSegmentator ##
-def generate_organ_segmentations(prepro_dir, output_segs_dir, 
-                                    device, 
-                                    fast,
-                                    verbose):
-    if not device == 'cpu': # assume 'cuda' or 'cuda:n'
-        device = 'gpu'  # update to 'gpu' for compatibility with TotalSegmentator (used CUDA_VISIBLE_DEVICES to bypass gpu specificiation)
+def generate_organ_segmentations(ct_map, organ_dir, 
+                                    device, fast, verbose):
+    if not device == 'cpu':
+        device = 'gpu'
 
-    cases = [case for case in os.listdir(prepro_dir) if case.endswith("0000.nii.gz")]
-
-    for case in cases:
-        case_base = case.replace("_0000.nii.gz", "")
-        case_path = os.path.join(prepro_dir, case)
-        out_path_total = os.path.join(output_segs_dir, f"{case_base}_total.nii.gz")
-
-        # Check for existing *_total output
+    # Use ct_map for robust case naming
+    # Best practice: save organ segmentations in a dedicated organ_dir, not alongside CT, for clarity and separation of outputs
+    for case_base, ct_path in ct_map.items():
+        out_path_total = os.path.join(organ_dir, f"{case_base}_total.nii.gz")
         if os.path.exists(out_path_total):
-            print(f"Organ segmentation already exists for {shorten_path(case_path)} at {shorten_path(out_path_total)}. Skipping.")
+            print(f"Organ segmentation already exists for {shorten_path(ct_path)} at {shorten_path(out_path_total)}. Skipping.")
             continue
-        else:
-            if verbose:
-                print(f"Saving organ segmentation for {shorten_path(case_path)} to {shorten_path(out_path_total)}")
-
-        # Look for any existing seg for this case
-        matching_segs = [f for f in os.listdir(output_segs_dir) if f.startswith(case_base) and f.endswith(".nii.gz")]
+        if verbose:
+            print(f"Saving organ segmentation for {shorten_path(ct_path)} to {shorten_path(out_path_total)}")
+        matching_segs = [f for f in os.listdir(organ_dir) if f.startswith(case_base) and f.endswith('.nii.gz')]
         valid_total_found = False
-
         for seg_file in matching_segs:
-            if "_total" not in seg_file:
-                seg_path = os.path.join(output_segs_dir, seg_file)
+            seg_base = seg_file[:-7] if seg_file.endswith('.nii.gz') else Path(seg_file).stem
+            if '_total' not in seg_base:
+                seg_path = os.path.join(organ_dir, seg_file)
                 try:
                     seg_img = nib.load(seg_path)
                     seg_data = seg_img.get_fdata()
                     unique_labels = np.unique(seg_data)
                     if (len(unique_labels) == 117) or (unique_labels.max() == 117):
-                        # This is a total segmentation, but misnamed
-                        new_path = os.path.join(output_segs_dir, f"{case_base}_total.nii.gz")
+                        new_path = os.path.join(organ_dir, f"{case_base}_total.nii.gz")
                         os.rename(seg_path, new_path)
                         print(f"Found valid TotalSegmentator output for {case_base} without _total suffix. Renamed to: {shorten_path(new_path)}")
                         valid_total_found = True
-                        break  # No need to generate again
+                        break
                 except Exception as e:
                     print(f"Could not check file {seg_path}: {e}")
-
         if valid_total_found:
             continue
-
-        # Otherwise, run TotalSegmentator
-        print(f"Processing: {case_path}")
-        command = f"TotalSegmentator -i '{case_path}' -o '{out_path_total}' --ta total --ml -d {device}"
+        command = f"TotalSegmentator -i '{ct_path}' -o '{out_path_total}' --ta total --ml -d {device}"
         if fast:
             command += " --fast"
-            if verbose:
-                print("Running TotalSegmentator in 'fast' mode.")
+            print("Running TotalSegmentator in 'fast' mode.")
         os.system(command)
 
 
 ## Apply SUV threshold to segmentation outputs ##
-def apply_suv_threshold(prepro_dir, output_dir, 
-                        suv_thresh, verbose,
+def apply_suv_threshold(pet_map, output_pred_dir, 
+                        suv_thresh, verbose, 
                         overwrite):
-    seg_files = [f for f in os.listdir(output_dir) if f.endswith('.nii.gz')]
+    seg_files = [f for f in os.listdir(output_pred_dir) if f.endswith('.nii.gz')]
 
     for seg_file in seg_files:
-        seg_path = os.path.join(output_dir, seg_file)
+        seg_path = os.path.join(output_pred_dir, seg_file)
         if verbose:
             print(f"Processing segmentation file: {shorten_path(seg_path)}")
         seg_img = nib.load(seg_path)
         seg_data = seg_img.get_fdata()
 
         seg_base = os.path.splitext(os.path.splitext(seg_file)[0])[0]
-        pt_path = os.path.join(prepro_dir, seg_base + '_0001.nii.gz')
-        if not os.path.exists(pt_path):
-            print(f"Warning: Corresponding PET image not found for {shorten_path(seg_file)} in {shorten_path(pt_path)}. Skipping.")
+        pt_path = pet_map.get(seg_base)
+        if not pt_path or not os.path.exists(pt_path):
+            print(f"Warning: Corresponding PET image not found for {shorten_path(seg_file)} in {pt_path}. Skipping.")
             continue
         pt_img = nib.load(pt_path)
         pt_data = pt_img.get_fdata()
@@ -480,9 +465,8 @@ def apply_suv_threshold(prepro_dir, output_dir,
         new_seg_img = nib.Nifti1Image(new_mask, affine=seg_img.affine, header=seg_img.header)
 
         if not overwrite:
-            backup_dir = os.path.join(output_dir, "backups_no_threshold")
+            backup_dir = os.path.join(output_pred_dir, "backups_no_threshold")
             os.makedirs(backup_dir, exist_ok=True)
-
             backup_path = os.path.join(backup_dir, seg_file)
             if os.path.exists(backup_path):
                 print(f"Backup already exists at {shorten_path(backup_path)}. Skipping backup.")
@@ -594,13 +578,6 @@ def calc_suv_metrics(pt_img, mask_array):
 def calc_lesion_volume(pt_img, mask_img):
     """
     Calculates volume of a binary lesion mask in cubic centimeters (cm³).
-
-    Inputs:
-        pt_img (nibabel.Nifti1Image): PET or CT image, used to get voxel spacing
-        mask_img (np.ndarray): Binary mask array (1 = lesion, 0 = background)
-
-    Returns:
-        float: Lesion volume in cm³
     """
     mask_array = mask_img
     if np.sum(mask_array) == 0:
@@ -625,10 +602,6 @@ def classify_lesion(
     ):
     """
     Classifies a lesion based on overlap with organs or relative position to CIB (if nodal).
-
-    Returns:
-        chosen_class (str): The assigned class (organ name or nodal classification).
-        method_used (str): One of 'overlap', 'binary classification', or 'distance'.
     """
     # Count overlaps
     overlap_counts = defaultdict(int)
@@ -792,9 +765,9 @@ def classify_case(pred_seg,
 
     return case_dict
 
-def lesion_classifier(lesion_dir, # from output_dir
+def lesion_classifier(lesion_dir, # from output_pred_dir
                         organ_dir, # newly created organ_dir
-                        img_dir, # from input_dir
+                        pet_map,
                         verbose,
                         case_filter=None,
                         overlap_threshold=0.6,
@@ -818,14 +791,10 @@ def lesion_classifier(lesion_dir, # from output_dir
         lesion_path = os.path.join(lesion_dir, lesion_file)
         organ_total_path = os.path.join(organ_dir, f"{case_name}{organ_suffix}.nii.gz")
 
-        if img_dir:
-            pt_path = os.path.join(img_dir, f"{case_name}_0001.nii.gz")
-            if not os.path.exists(pt_path):
-                logging.warning(f"PT path does not exist: {pt_path}")
-            else:
-                pt_img = nib.load(pt_path)
-        else:
-            pt_img = None
+        pt_img = None
+        pt_path = pet_map.get(case_name)
+        if pt_path and os.path.exists(pt_path):
+            pt_img = nib.load(pt_path)
 
         lesion_seg = get_nifti_fdata(lesion_path, verbose=False)
         organ_total = get_nifti_fdata(organ_total_path, verbose=False)
@@ -988,7 +957,8 @@ def pad_or_crop_to_match(batch, tolerance_ratio=1.75, verbose=False):
     return batch_imgs, batch_labels
 
 
-def classify_liver_disease(img_dir,
+def classify_liver_disease(ct_map,
+                            pet_map,
                             organ_dir,
                             model_path,
                             device,
@@ -1016,18 +986,15 @@ def classify_liver_disease(img_dir,
         print(f"Loaded model from {model_path} with threshold {threshold:.4f}")
         print(f"Using device: {device}")
 
-    # Find cases based on CT file pattern
-    ct_files = sorted([f for f in os.listdir(img_dir) if f.endswith("_0000.nii.gz")])
+    # Iterate over ct_map for cases
     liver_classifications = {}
-
-    for ct_file in tqdm(ct_files, desc="Classifying liver disease"):
-        case_name = ct_file.replace("_0000.nii.gz", "")
-        ct_path = os.path.join(img_dir, ct_file)
-        pt_path = os.path.join(img_dir, f"{case_name}_0001.nii.gz")
+    for case_name in tqdm(sorted(ct_map.keys()), desc="Classifying liver disease"):
+        ct_path = ct_map[case_name]
+        pt_path = pet_map.get(case_name)
         seg_path = os.path.join(organ_dir, f"{case_name}_total.nii.gz")
 
         # Check file existence
-        if not os.path.exists(pt_path):
+        if not pt_path or not os.path.exists(pt_path):
             if verbose:
                 print(f"Skipping {case_name}: Missing PET.")
             continue
@@ -1102,7 +1069,8 @@ def classify_liver_disease(img_dir,
     return liver_classifications
 
 def update_liver_mets(lesion_results_dict, 
-                        img_dir, 
+                        ct_map,
+                        pet_map, 
                         organ_dir, 
                         model_path, 
                         device,
@@ -1115,7 +1083,8 @@ def update_liver_mets(lesion_results_dict,
             print("Liver mets already classified. Use --overwrite to re-run classification.")
             return
 
-    liver_classifications = classify_liver_disease(img_dir,
+    liver_classifications = classify_liver_disease(ct_map,
+                                                    pet_map,
                                                     organ_dir,
                                                     model_path,
                                                     device,
@@ -1189,7 +1158,7 @@ def collate_nomogram_info(lesion_results_dict, lesion_results_dir,
             anonymized_map[case] = anon_name
 
     # Metrics column names
-    columns = ["Case", "Tumour_SUVmean", "Number_of_lesions", "Bone_mets", "Liver_mets"]
+    columns = ["Case", "Tumour_SUVmean", "Number_of_lesions", "TTV", "Bone_mets", "Liver_mets"]
 
     rows = []
     for case in cases:
@@ -1201,15 +1170,20 @@ def collate_nomogram_info(lesion_results_dict, lesion_results_dir,
         suvmean = float(f"{suvmean:.4g}") if isinstance(suvmean, (int, float)) else suvmean
 
         number_lesions = case_data.get("lesion_metrics", {}).get("region", {}).get("whole_body", {}).get("lesion_count", 0)
+        
+        ttv = case_data.get("lesion_metrics", {}).get("region", {}).get("whole_body", {}).get("total_burden", 0)
+        ttv = float(f"{ttv:.4g}") if isinstance(ttv, (int, float)) else ttv
+        
         bone_lesion_count = case_data.get("lesion_metrics", {}).get("region", {}).get("bone", {}).get("lesion_count", 0)
         bone_mets = bool(bone_lesion_count > 0)
+        
         liver_mets = bool(case_data.get("lesion_metrics", {}).get("patient", {}).get("liver_mets", 0))
 
-        rows.append([case_display, suvmean, number_lesions, bone_mets, liver_mets, extract_date_from_case(case)])
+        rows.append([case_display, suvmean, number_lesions, ttv, bone_mets, liver_mets, extract_date_from_case(case)])
 
     # Sort by date if present
-    rows.sort(key=lambda x: (x[5] is None, x[5]))  # None dates go last
-    rows = [[case, suvmean, number_lesions, bone_mets, liver_mets] for case, suvmean, number_lesions, bone_mets, liver_mets, _ in rows]
+    rows.sort(key=lambda x: (x[6] is None, x[6]))  # None dates go last
+    rows = [[case, suvmean, number_lesions, ttv, bone_mets, liver_mets] for case, suvmean, number_lesions, ttv, bone_mets, liver_mets, _ in rows]
 
     # Save mapping if anonymizing
     if anonymize:
@@ -1239,8 +1213,8 @@ def collate_nomogram_info(lesion_results_dict, lesion_results_dir,
 
 ## Main post-processing function ##
 def post_process(
-        prepro_dir, # location of NIfTI images (either input_path or newly created _preprocessed path)
-        output_dir, # location of model's predictions
+        list_of_lists_prepro, # list of [ct_path, pet_path] pairs identified for preprocessing
+        output_pred_dir, # location of model's predictions
         organ_dir, # location of organ segmentations
         device,
         suv_thresh,
@@ -1249,34 +1223,52 @@ def post_process(
         overwrite,
         anonymize
     ):
+    # Build ct_map and pet_map from list_of_lists
+    ct_map = {}
+    pet_map = {}
+    for pair in list_of_lists_prepro:
+        ct_path = Path(pair[0])
+        pt_path = Path(pair[1])
+        # Robustly remove .nii.gz or .nii and _0000 suffix
+        name = ct_path.name
+        if name.endswith('.nii.gz'):
+            base = name[:-7]  # remove .nii.gz
+        elif name.endswith('.nii'):
+            base = name[:-4]  # remove .nii
+        else:
+            raise ValueError(f"Unexpected CT file format: {ct_path.name}")
+        # Remove _0000 if present
+        if base.endswith('_0000'):
+            base = base[:-5]
+        case_base = base
+        ct_map[case_base] = str(ct_path)
+        pet_map[case_base] = str(pt_path)
+        # print(f"Mapped case {case_base}: CT={shorten_path(ct_path)}, PET={shorten_path(pt_path)}")
+
     if suv_thresh > 0:
         # Apply SUV thresholding
-        apply_suv_threshold(prepro_dir, output_dir, 
+        apply_suv_threshold(pet_map, output_pred_dir, 
                             suv_thresh, verbose,
                             overwrite)
-        logging.info(f"Applied SUV thresholding (threshold = {suv_thresh}) to segmentation outputs in {output_dir}")
+        logging.info(f"Applied SUV thresholding (threshold = {suv_thresh}) to segmentation outputs in {output_pred_dir}")
         lesion_results_json = f"lesion_results_suv_thresh_{int(suv_thresh)}.json"
     else:
         logging.info(f"No SUV thresholding applied (threshold = {suv_thresh}) to segmentation outputs.")
         lesion_results_json = "lesion_results.json"
-    
+
     if organ_dir is None:
-        organ_dir = os.path.join(os.path.dirname(output_dir), "organ_segmentations")
-        os.makedirs(organ_dir, exist_ok=True)
-        logging.info(f"No folder containing organ segmentations specified, newly generated segmentations will be saved to {shorten_path(organ_dir)}")
+        organ_dir = str(Path(output_pred_dir).parent / (Path(output_pred_dir).name.replace('_outputs', '_organ_segmentations')))
+        logging.info(f"No organ segmentation directory specified. Using default: {shorten_path(organ_dir)}")
     else:
-        logging.info(f"Using organ segmentations from {shorten_path(organ_dir)}")
+        logging.info(f"Using user-specified organ segmentation directory: {shorten_path(organ_dir)}")
+    os.makedirs(organ_dir, exist_ok=True)
+    # Generate organ segmentations for each case in ct_map
+    generate_organ_segmentations(ct_map, organ_dir, 
+                                    device, fast, verbose)
 
-    # Generate organ segmentations
-    generate_organ_segmentations(prepro_dir, organ_dir, 
-                                    device,
-                                    fast, 
-                                    verbose)
-
-    lesion_results_dir = os.path.join(Path(output_dir).parent, "lesion_classification")
-    if not os.path.exists(lesion_results_dir):
-        os.makedirs(lesion_results_dir, exist_ok=True)
-        logging.info(f"Created lesion classification directory at {shorten_path(lesion_results_dir)}")
+    # Lesion classification and metrics: iterate over cases in output_pred_dir
+    lesion_results_dir = os.path.join(Path(output_pred_dir).parent, Path(output_pred_dir).name.replace('_outputs', '_lesion_classification'))
+    os.makedirs(lesion_results_dir, exist_ok=True)
     lesion_results_json_path = os.path.join(lesion_results_dir, lesion_results_json)
     if not overwrite and os.path.exists(lesion_results_json_path):
         logging.info(f"Lesion results JSON already exists at {shorten_path(lesion_results_json_path)} and overwrite is False.")
@@ -1285,33 +1277,33 @@ def post_process(
             lesion_results_dict = json.load(f)
         logging.info(f"Loaded existing lesion results from {lesion_results_json_path}")
     else:
-        logging.info(f"Lesion results JSON will be saved to {shorten_path(lesion_results_json_path)}")
-
+        if verbose:
+            logging.info(f"Lesion results JSON will be saved to {shorten_path(lesion_results_json_path)}")
         # Classify lesions (using generated organ segs) and extract biomarkers
         lesion_results_dict = lesion_classifier(
-                                lesion_dir=output_dir,
+                                lesion_dir=output_pred_dir,
                                 organ_dir=organ_dir,
-                                img_dir=prepro_dir,
+                                pet_map=pet_map,
                                 verbose=verbose,
                                 case_filter=None,
                                 overlap_threshold=0.5,
                                 organ_suffix="_total"
                             )
-
         lesion_results_dict["SUV_threshold"] = suv_thresh
 
     # Liver disease classification - [ADD THAT THIS IS ONLY DONE IF LIVER DISEASE NOT ALREADY CLASSIFIED]
     # [UPDATE PATH TO USE MODEL FROM GITHUB]
-    liver_model_path = '/media/joelnoble/Pal_CT/PSMA-PET/Models/Liver_classifier/full_train/exp1_high_alpha/run_20250704-190755/best_model.pth'
+    liver_model_path = '/media/joel/Pal_CT/PSMA-PET/Models/Liver_classifier/full_train/exp1_high_alpha/run_20250704-190755/best_model.pth'
     # Update lesion results with liver mets classification
     update_liver_mets(lesion_results_dict, 
-                        img_dir=prepro_dir,
+                        ct_map=ct_map,
+                        pet_map=pet_map,
                         organ_dir=organ_dir,
                         model_path=liver_model_path,
                         device=device,
                         overwrite=overwrite,
                         verbose=verbose)
-    
+
     # Collate nomogram info
     collate_nomogram_info(lesion_results_dict, lesion_results_dir,
                             verbose=verbose,
