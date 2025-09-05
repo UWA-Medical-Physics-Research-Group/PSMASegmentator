@@ -3,9 +3,9 @@
 **PSMASegmentator** is a tool for the automatic segmentation of PSMA PET/CT images using Deep Learning (DL). 
 
 The segmentation model uses the [nnUNetv2 framework](https://github.com/MIC-DKFZ/nnUNet), along with the DKFZ LesionTracer team's winning [autoPET-III methodology](https://github.com/mic-dkfz/autopet-3-submission). 
-The training dataset is across multiple institutions and scanner types, with 597 patients from the [autoPET-III dataset](https://autopet-iii.grand-challenge.org/) and 438 from Western Australian institutions, for a total of 1015 patients.
+The training dataset is across multiple institutions and scanner types, with 597 patients from the [autoPET-III dataset](https://autopet-iii.grand-challenge.org/) and 438 from Western Australian institutions, for a total of 1035 patients.
 
-It supports both DICOM and NIfTI inputs and automatically handles pre-processing, inference, and post-processing (including lesion classification and biomarker extraction, utilizing [TotalSegmentator](https://github.com/wasserth/TotalSegmentator)).
+It supports both DICOM and NIfTI inputs and automatically handles pre-processing, inference, and post-processing. This includes lesion classification and biomarker extraction, utilizing [TotalSegmentator](https://github.com/wasserth/TotalSegmentator) and a complimentary liver metastases classifier model.
 
 ---
 ---
@@ -45,36 +45,48 @@ Once installed, you can run segmentations using the command-line interface (CLI)
 python -m psma_segmentator.cli -i INPUT_DIR -pat YOUR_TOKEN [options]
 ```
 
+### Required Arguments
+
+- `-i`, `--input_dir`  
+    Path to input directory containing the images to be segmented. These can be in DICOM or NIfTI format.
+#### OR:
+- `-i_ct`, `--input_ct`  
+    Path to input CT NIfTI file to be segmented.  
+#### AND
+- `-i_pet`, `--input_pet`  
+    Path to input PET NIfTI file to be segmented.  
+
+- `-pat`, `--patient_token`  
+    Your patient-specific token for accessing releases from the `PSMASegmentator` GitHub repository.  
+
 ### Optional Arguments
 
 - `-o`, `--output_dir`  
-    Path to save the output `.nii.gz` segmentation files to.  
-    **Default:** `.../(input_dir).parent/(input_dir.name)_outputs`
+    Path to save the output `.nii.gz` segmentation files to. Recommended to specify this when passing direct NIfTIs via `-i_ct` and `-i_pet`.
+    **Default:** `.../[input].parent/[input].name_outputs`
+
+- `-w`, `--weights_dir`
+    Path to either existing weights directory, or directory to download weights to.  
+    **Default:** `~/.psmasegmentator/[version]`
 
 - `--version`  
-    Specify the version of the PSMA Segmentator model to use (e.g., `0.0.2`).  
+    Specify which release of `PSMASegmentator` to use (e.g., `v1.0.0`).  
     **Default:** Latest available release.
 
 - `-d`, `--device`  
     Choose the device for inference.  
-    **Options:** `"cpu"` or `"cuda"`  
+    **Options:** `"cpu"`, `"cuda"` or `"cuda:n"` (where `n` is the GPU index)  
     **Default:** `"cuda"` if available.
 
-- `--include_rtstructs`  
-    If present, will parse and pre-process any RTSTRUCT DICOMs in the input.  
+- `-rts`, `--rtstruct_processing`  
+    If True, will convert any found RTSTRUCTs to NIfTI and convert output NIfTIs  to RTSTRUCTs.  
     **Default:** `False`
-
-- `-v`, `--verbose`  
-    Enable detailed logging and progress messages.
-
-- `-f`, `--force`  
-    Overwrite any existing preprocessing or segmentation outputs in the output directory.
 
 - `-ppo`, `--preprocess_only`  
     Only perform preprocessing. No segmentation or postprocessing will occur.
 
-- `-pso`, `--postprocess_only`  
-    Only perform postprocessing. Assumes that segmentations already exist.
+- `-dpp`, `--disable_postprocessing`  
+    Disable post-processing of the output files to just do segmentation.
 
 - `-suv`, `--suv_threshold`  
     Apply an SUV threshold to the lesion segmentation output.  
@@ -86,6 +98,12 @@ python -m psma_segmentator.cli -i INPUT_DIR -pat YOUR_TOKEN [options]
 
 - `--fast`
     Uses 'fast' mode for inference. This disables Test-Time Augmentation (TTA), and uses the --fast flag in TotalSegmentator for faster organ segmentation generation.
+
+- `-f`, `--force`  
+    Overwrite any existing preprocessing or segmentation outputs in the output directory.
+
+    - `-v`, `--verbose`  
+    Enable detailed logging and progress messages.
 
 
 ---
@@ -116,7 +134,7 @@ PET series are validated for required DICOM tags needed for SUV conversion (e.g.
 
 ### NIfTI Input
 
-If the pipeline detects any `.nii.gz` files anywhere under `input_dir`, it assumes the entire input is NIfTI-based and processes the files in either a flattened or per-case format:
+If the pipeline detects any `.nii.gz` files anywhere under `input_dir`, it assumes the entire input is NIfTI-based and processes the files in either a flattened or case-subfolder format:
 
 #### Option 1: Flat NIfTI Files
 ```bash
@@ -140,7 +158,10 @@ input_dir/
 ...
 ```
 
-The pipeline recursively scans all `.nii.gz` files and groups them by case using the filename pattern `caseid_0000.nii.gz` (CT) and `caseid_0001.nii.gz` (PET). This aligns with [nnUNet's](https://github.com/MIC-DKFZ/nnUNet) naming convention. 
+The pipeline recursively scans all `.nii.gz` files and groups them by case using the filename pattern `caseid_0000.nii.gz` (CT) and `caseid_0001.nii.gz` (PET). This aligns with [nnUNet's](https://github.com/MIC-DKFZ/nnUNet) naming convention.
+
+#### Option 3: Direct NIfTI Input
+Alternatively, you can pass direct paths to CT and PET NIfTI files using the `-i_ct` and `-i_pet` flags. In this case, it is recommended to specify an `output_dir` as well, as the default output directory will be specific to the input file which can bloat the parent directory.
 
 All files must already be co-registered and in consistent orientation (LPS assumed). Additionally, all PET images already in `nii.gz` format are assumed to be SUV-converted.
 
@@ -148,7 +169,7 @@ If CT and PET images differ in shape, the CT will be automatically resampled to 
 
 ### RTSTRUCT Support (Optional)
 
-If `--include_rtstructs` is enabled and an RTSTRUCT series is present alongside the CT and PET series' within each study folder, the RTSTRUCT `.dcm` file will be converted - using Plastimatch - into individual NIfTI masks, with optional renaming applied.
+If `--rtstruct_processing` is enabled and an RTSTRUCT series is present alongside the CT and PET series' within each study folder, the RTSTRUCT `.dcm` file will be converted - using Plastimatch - into individual NIfTI masks, with optional renaming applied. Additionally, output NIfTI masks will be converted into an RTSTRUCT series and saved in a dedicated '_rtstructs' directory alongside the output directory.
 
 ---
 
@@ -171,6 +192,9 @@ After segmentation, post-processing is performed to classify lesions and extract
 #### Lesion classification and metrics extraction:
   Each lesion is assigned to an organ or classified as nodal (either above or below the Common Iliac Bifurcation) based on an overlap threshold, and key metrics are extracted at the lesion- and patient-level.
 
+#### Liver disease classification:
+  A complimentary binary classifier model is present to detect the presence of liver metastases, a significant negative prognosticator.
+
 #### Results JSON output:
 
 A `lesion_results.json` (or `lesion_results_suv_thresh_{X}.json` if SUV thresholding is applied) is saved in the output directory. It contains an entry for each case, consisting of:
@@ -179,7 +203,7 @@ A `lesion_results.json` (or `lesion_results_suv_thresh_{X}.json` if SUV threshol
 
     - `site`: Aggregated lesion counts and volumes by specific `TotalSegmentator` site.
     - `region`: Aggregated metrics grouped into higher-level regions (whole body, bone, nodal above/below CIB, visceral, and prostate).
-    - `patient`: SUV mean, max, and total metrics.
+    - `patient`: SUV mean, max, and total metrics, and if liver metastases have been detected.
 
 A final 'All' entry collates the site- and region-level metrics across all provided cases. 
 

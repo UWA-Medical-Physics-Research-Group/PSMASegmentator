@@ -43,6 +43,10 @@ def main():
         help="Directory to save segmentation results. Defaults to .../input_dir.parent/input_dir.name_outputs."
     )
     parser.add_argument(
+        "-w", "--weights_dir", required=False, default=None,
+        help="Directory to look for existing model weights or to store downloaded model weights. Defaults to ~/.psmasegmentator/[version]."
+    )
+    parser.add_argument(
         "-pat", "--personal_access_token", required = True, 
         help= "GitHub Personal Access Token (PAT) for downloading weights."
     )
@@ -55,24 +59,16 @@ def main():
         help="Device to use for processing, e.g., 'cpu', 'cuda', or 'cuda:n' (0 <= n <= num_gpus). Defaults to 'cuda' if available, otherwise 'cpu'."
     )
     parser.add_argument(
-        "--include_rtstructs", required=False, action="store_true",
-        help="Specify if RTSTRUCTs (in DICOM form) should be pre-processed, if present. Defaults to False."
+        "-rts", "--rtstruct_processing", required=False, action="store_true",
+        help="If True, will convert any found RTSTRUCTs to NIfTI and convert output NIfTIs to RTSTRUCTs. Defaults to False."
     )        
     parser.add_argument(
-        "-v", "--verbose", required=False, action="store_true",
-        help="Enable verbose output."
-    )
-    parser.add_argument(
-        "-f", "--force", dest="overwrite", required=False, action="store_true",
-        help="Overwrite existing pre-processing and segmentation results."
-    )
-    parser.add_argument(
         "-ppo", "--preprocess_only", required=False, action="store_true",
-        help="Pre-process the input files only. No segmentation will be performed."
+        help="Only perform preprocessing and save the preprocessed files. No segmentation will be performed."
     )
     parser.add_argument(
-        "-pso", "--postprocess_only", required=False, action="store_true",
-        help="Post-process the (expected) output files only. No pre-processing or segmentation will be performed."
+        "-dpp", "--disable_postprocessing", required=False, action="store_true",
+        help="Disable post-processing of the output files to just do segmentation."
     )
     parser.add_argument(
         "-suv", "--suv_threshold", required=False, type=float, default=0.0,
@@ -86,14 +82,22 @@ def main():
         "--fast", required=False, action="store_true",
         help="Use fast mode for inference. This disables Test-Time Augmentation (TTA), and uses the --fast flag in TotalSegmentator for faster organ segmentation generation."
     )
-    parser.add_argument(
-        "--show_w", action="store_true", help="Show the GNU General Public License warranty disclaimer."
+    parser.add_argument( # not currently in readme
+        "-sw", "--show_w", action="store_true", help="Show the GNU General Public License warranty disclaimer."
+    )
+    parser.add_argument( # not currently in readme
+        "-sc", "--show_c", action="store_true", help="Show the GNU General Public License terms and conditions."
+    )
+    parser.add_argument( # not currently in readme
+        "-an", "--anonymize", action="store_true", default=False, help="Anonymize patient-identifiable data in the output results."
     )
     parser.add_argument(
-        "--show_c", action="store_true", help="Show the GNU General Public License terms and conditions."
+        "-f", "--force", dest="overwrite", required=False, action="store_true",
+        help="Overwrite existing pre-processing and segmentation results."
     )
     parser.add_argument(
-        "--anonymize", action="store_true", default=False, help="Anonymize patient-identifiable data in the output results."
+        "-v", "--verbose", required=False, action="store_true",
+        help="Enable verbose output."
     )
 
     args = parser.parse_args()
@@ -108,21 +112,22 @@ def main():
                 input_dir = args.input_dir, 
                 input_ct = args.input_ct,
                 input_pet = args.input_pet,
-                output_pred_dir = args.output_dir, 
-                token = args.personal_access_token, 
+                output_pred_dir = args.output_dir,
+                weights_dir = args.weights_dir,
+                token = args.personal_access_token,
                 version= args.version,
                 device = args.device,
-                incl_rtstructs = args.include_rtstructs,
-                verbose = args.verbose,
-                overwrite = args.overwrite,
+                rtstruct_processing = args.rtstruct_processing,
                 preprocess_only = args.preprocess_only,
-                postprocess_only = args.postprocess_only,
+                disable_postprocessing = args.disable_postprocessing,
                 suv_thresh = args.suv_threshold,
                 organ_dir = args.organ_dir,
                 fast = args.fast,
                 show_w = args.show_w,
                 show_c = args.show_c,
-                anonymize = args.anonymize
+                anonymize = args.anonymize,
+                overwrite = args.overwrite,
+                verbose = args.verbose,
             )
 
 if __name__ == "__main__":

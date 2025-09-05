@@ -24,7 +24,7 @@ import torch
 import re
 import requests
 import shutil
-from psma_segmentator.download_weights import download_fold_weights_via_api
+from psma_segmentator.download_weights import download_model_weights_via_api
 from psma_segmentator.inference import segmentate
 from psma_segmentator.pre_processing import pre_process, shorten_path
 from psma_segmentator.post_processing import post_process
@@ -169,19 +169,19 @@ def setup_psma_segmentator(weights_dir: str):
     os.environ["nnUNet_preprocessed"] = str(weights_dir)
     os.environ["nnUNet_results"] = str(weights_dir)
 
-def psma_segmentator(weights_dir: str = None, 
-                        input_dir: str = None,
+def psma_segmentator(input_dir: str = None,
                         input_ct: str = None,
                         input_pet: str = None,
                         output_pred_dir: str = None, 
+                        weights_dir: str = None,
                         token: str = None,
                         version: str = None,
                         device: str = "cuda" if torch.cuda.is_available() else "cpu",
-                        incl_rtstructs: bool = False,
+                        rtstruct_processing: bool = False,
                         verbose: bool = False,
                         overwrite: bool = False,
                         preprocess_only: bool = False,
-                        postprocess_only: bool = False,
+                        disable_postprocessing: bool = False,
                         suv_thresh: float = 0.0,
                         organ_dir: str = None,
                         fast: bool = False,
@@ -241,10 +241,10 @@ This is free software, and you are welcome to redistribute it under certain cond
         print(f"\nOutput directory not specified. Using: {output_pred_dir}")
     output_prepro_dir = input_info["output_prepro_dir"]
 
-    if incl_rtstructs == True and shutil.which("plastimatch") is None:
-        raise EnvironmentError(
-        "Plastimatch not found. Please install Plastimatch (e.g., via 'sudo apt install plastimatch') if you want to include RTSTRUCT processing."
-        )
+    # if rtstruct_processing == True and shutil.which("plastimatch") is None:
+    #     raise EnvironmentError(
+    #     "Plastimatch not found. Please install Plastimatch (e.g., via 'sudo apt install plastimatch') if you want to include RTSTRUCT processing."
+    #     )
 
     headers = {
         "Authorization": f"Bearer {token}",
@@ -263,59 +263,73 @@ This is free software, and you are welcome to redistribute it under certain cond
 
     if weights_dir is None:
         weights_dir = get_psmasegmentator_dir(version)
-        print(f"\nUsing weights directory: {weights_dir}")
-    
+        print(f"\nUsing default weights directory: {weights_dir}")
+    else: # If weights_dir is missing version subdir, add it
+        if not weights_dir.endswith(version):
+            weights_dir = os.path.join(weights_dir, version)
+        print(f"\nUsing specified weights directory: {weights_dir}")
+
     setup_psma_segmentator(weights_dir)
 
-    download_fold_weights_via_api(weights_dir, headers, release_data)  # Download model weights if needed
+    # Download all required model assets (main weights and liver classifier)
+    download_model_weights_via_api(weights_dir, headers, release_data)
+    # Dynamically detect the liver classifier model file in weights_dir
+    liver_model_path = None
+    for f in Path(weights_dir).glob("*liver_classifier*.pth"):
+        liver_model_path = str(f)
+        break
+    if liver_model_path is None:
+        print("\nWARNING: No liver classifier model found in weights directory.")
     
-    if not postprocess_only:
-        # Preprocess the input files
-        list_of_lists_prepro, list_of_lists_pred = pre_process(input_path, 
-                                                    input_ct,
-                                                    input_pet,
-                                                    incl_rtstructs, 
-                                                    output_pred_dir=output_pred_dir,
-                                                    output_prepro_dir=output_prepro_dir,
-                                                    handling_dicoms=handling_dicoms,
-                                                    handling_subdir_niftis=handling_subdir_niftis,
-                                                    handling_flattened_niftis=handling_flattened_niftis,
-                                                    handling_direct_niftis=handling_direct_niftis,
-                                                    verbose=verbose, overwrite=overwrite)
-        if preprocess_only:
-            print("\nPre-processing (only) complete. No segmentation performed.")
-            return
-                
-        segmentate(
-            model_folder=weights_dir,
-            list_of_lists_pred=list_of_lists_pred,
-            output_pred_dir=output_pred_dir,
-            device=device,
-            use_tta=not fast,  # Use TTA unless fast mode is specified 
-            verbose=verbose
-        )
-    else:
-        print("\nSkipping pre-processing and segmentation. Only post-processing will be performed.")
-        # Check if output dir is empty (i.e., nothing to post-process)
-        if not os.listdir(output_pred_dir):
-            print(f"\nERROR: Output directory {output_pred_dir} is empty. "
-                "Please run pre-processing and segmentation first.")
-            raise SystemExit(1)
+    # Preprocess the input files
+    list_of_lists_prepro, list_of_lists_pred, ct_dicom_case_map = pre_process(input_path, 
+                                                input_ct,
+                                                input_pet,
+                                                rtstruct_processing, 
+                                                output_pred_dir=output_pred_dir,
+                                                output_prepro_dir=output_prepro_dir,
+                                                handling_dicoms=handling_dicoms,
+                                                handling_subdir_niftis=handling_subdir_niftis,
+                                                handling_flattened_niftis=handling_flattened_niftis,
+                                                handling_direct_niftis=handling_direct_niftis,
+                                                verbose=verbose, overwrite=overwrite)
 
-    # Post-process the segmentation results
-    print(f"\nInitiating post-processing of segmentations in {shorten_path(output_pred_dir)}...")
-    post_process(
-        # output_prepro_dir=output_prepro_dir,
-        list_of_lists_prepro=list_of_lists_prepro,
+    if preprocess_only:
+        print("\nPre-processing complete. Pre-processed files are in: "
+            f"{shorten_path(output_prepro_dir)}")
+        return
+
+    segmentate(
+        model_folder=weights_dir,
+        list_of_lists_pred=list_of_lists_pred,
         output_pred_dir=output_pred_dir,
-        organ_dir=organ_dir,
         device=device,
-        suv_thresh=suv_thresh,
-        fast=fast,
-        verbose=verbose,
-        overwrite=overwrite,
-        anonymize=anonymize
+        use_tta=not fast,  # Use TTA unless fast mode is specified 
+        verbose=verbose
     )
+
+    if disable_postprocessing:
+        print("\nSkipping post-processing. Segmentation results are in: "
+            f"{shorten_path(output_pred_dir)}")
+        return
+    else:
+        # Post-process the segmentation results
+        print(f"\nInitiating post-processing of segmentations in {shorten_path(output_pred_dir)}...")
+        post_process(
+            # output_prepro_dir=output_prepro_dir,
+            list_of_lists_prepro=list_of_lists_prepro,
+            output_pred_dir=output_pred_dir,
+            organ_dir=organ_dir,
+            liver_model_path=liver_model_path,
+            rtstruct_processing=rtstruct_processing,
+            ct_dicom_case_map=ct_dicom_case_map,
+            device=device,
+            suv_thresh=suv_thresh,
+            fast=fast,
+            verbose=verbose,
+            overwrite=overwrite,
+            anonymize=anonymize,
+        )
 
     print("\nPSMA segmentation pipeline complete.")
     return

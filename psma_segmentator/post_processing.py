@@ -45,8 +45,10 @@ from monai.networks.nets import DenseNet121
 from monai.transforms import Compose, NormalizeIntensity
 import csv
 from datetime import datetime
+import subprocess
 
 from psma_segmentator.pre_processing import shorten_path
+import pyplastimatch
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(message)s")
 
@@ -392,52 +394,11 @@ def expand_segmentation(predicted_image, pet_image,
         
     return expanded_seg
 
-
-## Generate organ segmentations using TotalSegmentator ##
-def generate_organ_segmentations(ct_map, organ_dir, 
-                                    device, fast, verbose):
-    if not device == 'cpu':
-        device = 'gpu'
-
-    # Use ct_map for robust case naming
-    # Best practice: save organ segmentations in a dedicated organ_dir, not alongside CT, for clarity and separation of outputs
-    for case_base, ct_path in ct_map.items():
-        out_path_total = os.path.join(organ_dir, f"{case_base}_total.nii.gz")
-        if os.path.exists(out_path_total):
-            print(f"Organ segmentation already exists for {shorten_path(ct_path)} at {shorten_path(out_path_total)}. Skipping.")
-            continue
-        if verbose:
-            print(f"Saving organ segmentation for {shorten_path(ct_path)} to {shorten_path(out_path_total)}")
-        matching_segs = [f for f in os.listdir(organ_dir) if f.startswith(case_base) and f.endswith('.nii.gz')]
-        valid_total_found = False
-        for seg_file in matching_segs:
-            seg_base = seg_file[:-7] if seg_file.endswith('.nii.gz') else Path(seg_file).stem
-            if '_total' not in seg_base:
-                seg_path = os.path.join(organ_dir, seg_file)
-                try:
-                    seg_img = nib.load(seg_path)
-                    seg_data = seg_img.get_fdata()
-                    unique_labels = np.unique(seg_data)
-                    if (len(unique_labels) == 117) or (unique_labels.max() == 117):
-                        new_path = os.path.join(organ_dir, f"{case_base}_total.nii.gz")
-                        os.rename(seg_path, new_path)
-                        print(f"Found valid TotalSegmentator output for {case_base} without _total suffix. Renamed to: {shorten_path(new_path)}")
-                        valid_total_found = True
-                        break
-                except Exception as e:
-                    print(f"Could not check file {seg_path}: {e}")
-        if valid_total_found:
-            continue
-        command = f"TotalSegmentator -i '{ct_path}' -o '{out_path_total}' --ta total --ml -d {device}"
-        if fast:
-            command += " --fast"
-            print("Running TotalSegmentator in 'fast' mode.")
-        os.system(command)
-
-
 ## Apply SUV threshold to segmentation outputs ##
-def apply_suv_threshold(pet_map, output_pred_dir, 
-                        suv_thresh, verbose, 
+def apply_suv_threshold(pet_map, 
+                        output_pred_dir, 
+                        suv_thresh, 
+                        verbose, 
                         overwrite):
     seg_files = [f for f in os.listdir(output_pred_dir) if f.endswith('.nii.gz')]
 
@@ -483,6 +444,106 @@ def apply_suv_threshold(pet_map, output_pred_dir,
             percent_removed = (num_removed / np.sum(mask)) * 100
             print(f"  Removed {num_removed} voxels ({percent_removed:.2f}%) from segmentation.")
 
+def seg_to_rtstruct(output_pred_dir, 
+                    ct_dicom_case_map,
+                    ct_map, 
+                    rtstruct_dir, 
+                    verbose,
+                    overwrite):
+    """
+    Converts a NIfTI segmentation to RTSTRUCT using metadata from the original CT DICOM series.
+    Args:
+        seg_nifti_path (str or Path): Path to the NIfTI segmentation file.
+        original_ct_dicom_dir (str or Path): Path to the original CT DICOM directory.
+        output_dir (str or Path, optional): Output directory for RTSTRUCT. If None, creates alongside output dir with '_outputs_rtstructs'.
+        verbose (bool): Print detailed info.
+    Returns:
+        Path to the generated RTSTRUCT file.
+    """
+    seg_files = [f for f in os.listdir(output_pred_dir) if f.endswith('.nii.gz')]
+
+    rtstruct_paths = []
+    for seg_file in seg_files:
+        seg_nifti_path = Path(output_pred_dir) / seg_file
+        # Extract case_name from seg_file (remove .nii.gz and any suffixes)
+        case_name = seg_file.split('.nii')[0]
+        # If ct_map is provided, use its keys for canonical case names
+        if ct_map and case_name not in ct_map:
+            # Try to match by prefix
+            for k in ct_map.keys():
+                if seg_file.startswith(k):
+                    case_name = k
+                    break
+        # Get CT DICOM path from ct_dicom_case_map
+        ct_dicom_path = ct_dicom_case_map.get(case_name)
+        if not ct_dicom_path:
+            print(f"Warning: No CT DICOM path found for case {case_name} at {ct_dicom_path}. Skipping RTSTRUCT conversion for {seg_file}.")
+            continue
+        ct_dicom_path = Path(ct_dicom_path)
+        rtstruct_name = seg_nifti_path.stem + '.dcm'
+        rtstruct_path = os.path.join(rtstruct_dir, rtstruct_name)
+        # Check if RTSTRUCT already exists
+        if os.path.exists(rtstruct_path) and not overwrite:
+            if verbose:
+                print(f"RTSTRUCT already exists for {case_name} at {rtstruct_path}. Skipping (overwrite=False).")
+            rtstruct_paths.append(rtstruct_path)
+            continue
+        try:
+            pyplastimatch.convert(
+                input=str(seg_nifti_path),
+                input_format='nii',
+                referenced_ct=str(ct_dicom_path),
+                output_type='rtstruct',
+                output=str(rtstruct_path)
+            )
+            if verbose:
+                print(f"Converted {seg_nifti_path} to RTSTRUCT at {rtstruct_path} using CT DICOMs from {ct_dicom_path}")
+            rtstruct_paths.append(rtstruct_path)
+        except Exception as e:
+            print(f"ERROR: pyplastimatch NIfTI→RTSTRUCT conversion failed for {seg_file}: {e}")
+            continue
+    return rtstruct_paths
+
+## Generate organ segmentations using TotalSegmentator ##
+def generate_organ_segmentations(ct_map, organ_dir, 
+                                    device, fast, verbose):
+    if not device == 'cpu':
+        device = 'gpu'
+
+    # Use ct_map for robust case naming
+    # Best practice: save organ segmentations in a dedicated organ_dir, not alongside CT, for clarity and separation of outputs
+    for case_base, ct_path in ct_map.items():
+        out_path_total = os.path.join(organ_dir, f"{case_base}_total.nii.gz")
+        if os.path.exists(out_path_total):
+            print(f"Organ segmentation already exists for {shorten_path(ct_path)} at {shorten_path(out_path_total)}. Skipping.")
+            continue
+        if verbose:
+            print(f"Saving organ segmentation for {shorten_path(ct_path)} to {shorten_path(out_path_total)}")
+        matching_segs = [f for f in os.listdir(organ_dir) if f.startswith(case_base) and f.endswith('.nii.gz')]
+        valid_total_found = False
+        for seg_file in matching_segs:
+            seg_base = seg_file[:-7] if seg_file.endswith('.nii.gz') else Path(seg_file).stem
+            if '_total' not in seg_base:
+                seg_path = os.path.join(organ_dir, seg_file)
+                try:
+                    seg_img = nib.load(seg_path)
+                    seg_data = seg_img.get_fdata()
+                    unique_labels = np.unique(seg_data)
+                    if (len(unique_labels) == 117) or (unique_labels.max() == 117):
+                        new_path = os.path.join(organ_dir, f"{case_base}_total.nii.gz")
+                        os.rename(seg_path, new_path)
+                        print(f"Found valid TotalSegmentator output for {case_base} without _total suffix. Renamed to: {shorten_path(new_path)}")
+                        valid_total_found = True
+                        break
+                except Exception as e:
+                    print(f"Could not check file {seg_path}: {e}")
+        if valid_total_found:
+            continue
+        command = f"TotalSegmentator -i '{ct_path}' -o '{out_path_total}' --ta total --ml -d {device}"
+        if fast:
+            command += " --fast"
+            print("Running TotalSegmentator in 'fast' mode.")
+        os.system(command)
 
 ## Helper functions ##
 def round_sig(x, sig=6):
@@ -1216,12 +1277,15 @@ def post_process(
         list_of_lists_prepro, # list of [ct_path, pet_path] pairs identified for preprocessing
         output_pred_dir, # location of model's predictions
         organ_dir, # location of organ segmentations
+        liver_model_path, # path to liver disease classification model
+        rtstruct_processing, # whether to do RTSTRUCT conversion
+        ct_dicom_case_map, # for RTSTRUCT conversion (requires original DICOM)
         device,
         suv_thresh,
         fast,
         verbose,
         overwrite,
-        anonymize
+        anonymize,
     ):
     # Build ct_map and pet_map from list_of_lists
     ct_map = {}
@@ -1244,11 +1308,16 @@ def post_process(
         ct_map[case_base] = str(ct_path)
         pet_map[case_base] = str(pt_path)
         # print(f"Mapped case {case_base}: CT={shorten_path(ct_path)}, PET={shorten_path(pt_path)}")
+    
+    # Derive output_base from output_pred_dir
+    output_base = Path(output_pred_dir).name.replace('_outputs', '')
 
+    # SUV THRESHOLDING
     if suv_thresh > 0:
-        # Apply SUV thresholding
-        apply_suv_threshold(pet_map, output_pred_dir, 
-                            suv_thresh, verbose,
+        apply_suv_threshold(pet_map, 
+                            output_pred_dir, 
+                            suv_thresh, 
+                            verbose,
                             overwrite)
         logging.info(f"Applied SUV thresholding (threshold = {suv_thresh}) to segmentation outputs in {output_pred_dir}")
         lesion_results_json = f"lesion_results_suv_thresh_{int(suv_thresh)}.json"
@@ -1256,6 +1325,20 @@ def post_process(
         logging.info(f"No SUV thresholding applied (threshold = {suv_thresh}) to segmentation outputs.")
         lesion_results_json = "lesion_results.json"
 
+    # RTSTRUCT CONVERSION
+    if rtstruct_processing:
+        # Create rtstruct_dir by adding to output_base
+        rtstruct_dir = output_base + "_rtstructs"
+        os.makedirs(rtstruct_dir, exist_ok=True)
+        logging.info(f"Converting segmentations to RTSTRUCT format in {shorten_path(rtstruct_dir)}")
+        seg_to_rtstruct(output_pred_dir, 
+                        ct_dicom_case_map,
+                        ct_map,
+                        rtstruct_dir,
+                        verbose,
+                        overwrite)
+
+    # ORGAN SEGMENTATION
     if organ_dir is None:
         organ_dir = str(Path(output_pred_dir).parent / (Path(output_pred_dir).name.replace('_outputs', '_organ_segmentations')))
         logging.info(f"No organ segmentation directory specified. Using default: {shorten_path(organ_dir)}")
@@ -1266,7 +1349,7 @@ def post_process(
     generate_organ_segmentations(ct_map, organ_dir, 
                                     device, fast, verbose)
 
-    # Lesion classification and metrics: iterate over cases in output_pred_dir
+    # LESION CLASSIFICATION (and metrics: iterate over cases in output_pred_dir)
     lesion_results_dir = os.path.join(Path(output_pred_dir).parent, Path(output_pred_dir).name.replace('_outputs', '_lesion_classification'))
     os.makedirs(lesion_results_dir, exist_ok=True)
     lesion_results_json_path = os.path.join(lesion_results_dir, lesion_results_json)
@@ -1291,9 +1374,8 @@ def post_process(
                             )
         lesion_results_dict["SUV_threshold"] = suv_thresh
 
-    # Liver disease classification - [ADD THAT THIS IS ONLY DONE IF LIVER DISEASE NOT ALREADY CLASSIFIED]
-    # [UPDATE PATH TO USE MODEL FROM GITHUB]
-    liver_model_path = '/media/joel/Pal_CT/PSMA-PET/Models/Liver_classifier/full_train/exp1_high_alpha/run_20250704-190755/best_model.pth'
+    # LIVER DISEASE CLASSIFICATION - [ADD THAT THIS IS ONLY DONE IF LIVER DISEASE NOT ALREADY CLASSIFIED]
+    # liver_model_path = '/media/joel/Pal_CT/PSMA-PET/Models/Liver_classifier/full_train/exp1_high_alpha/run_20250704-190755/best_model.pth'
     # Update lesion results with liver mets classification
     update_liver_mets(lesion_results_dict, 
                         ct_map=ct_map,
@@ -1304,7 +1386,7 @@ def post_process(
                         overwrite=overwrite,
                         verbose=verbose)
 
-    # Collate nomogram info
+    # NOMOGRAM CONSTRUCTION
     collate_nomogram_info(lesion_results_dict, lesion_results_dir,
                             verbose=verbose,
                             anonymize=anonymize)
