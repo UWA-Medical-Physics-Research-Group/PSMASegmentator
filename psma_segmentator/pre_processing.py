@@ -19,7 +19,6 @@ along with this program.  If not, see <https://www.gnu.org/licenses/>.
 """
 
 import os
-import pyplastimatch
 import shutil
 import tempfile
 from pathlib import Path
@@ -97,7 +96,7 @@ def resample_ct_to_pet(ct_path, pt_path, verbose):
 def pre_process(input_path, 
                 input_ct,
                 input_pet,
-                incl_rtstructs, 
+                rtstruct_processing, 
                 output_pred_dir,
                 output_prepro_dir,
                 handling_dicoms,
@@ -113,36 +112,37 @@ def pre_process(input_path,
         if not case_dirs:
             raise ValueError(f"No case directories found in {input_path}")
 
-        output_dir_structs = (input_path.parent / f"{input_path.name}_structs") if incl_rtstructs else None
-        output_dir_gts = (input_path.parent / f"{input_path.name}_gt_segmentations") if incl_rtstructs else None
-        if incl_rtstructs:
-            output_dir_structs.mkdir(parents=True, exist_ok=True)
-            output_dir_gts.mkdir(parents=True, exist_ok=True)
+        output_dir_structs = (input_path.parent / f"{input_path.name}_gt_lesion_segmentations") if rtstruct_processing else None
+        output_dir_gts = (input_path.parent / f"{input_path.name}_gt_ttb_segmentations") if rtstruct_processing else None
 
         # Unified logic for both DICOM and NIfTI subdir cases
-        not_preprocessed_case_dirs, list_of_lists_already_prepro = find_preprocessed(case_dirs,
-                                                                output_prepro_dir,
-                                                                incl_rtstructs,
-                                                                output_dir_gts,
-                                                                verbose)
-        print(f"not_preprocessed_case_dirs: {not_preprocessed_case_dirs}; list_of_lists_already_prepro: {list_of_lists_already_prepro};")
+        not_preprocessed_case_dirs, list_of_lists_already_prepro, ct_dicom_case_map = find_preprocessed(
+            case_dirs,
+            output_prepro_dir,
+            rtstruct_processing,
+            output_dir_gts,
+            handling_dicoms,
+            verbose
+        )
+        print(f"not_preprocessed_case_dirs: {not_preprocessed_case_dirs}; list_of_lists_already_prepro: {list_of_lists_already_prepro}; ct_dicom_case_map: {ct_dicom_case_map}")
 
         # 3. For post-processing, use all preprocessed cases
         if not_preprocessed_case_dirs:
             # Only process cases not yet preprocessed
             if handling_dicoms:
-                list_of_lists_newly_prepro, ct_dicom_case_map = handle_dicoms(not_preprocessed_case_dirs,
-                                                                    output_prepro_dir,
-                                                                    incl_rtstructs,
-                                                                    output_dir_structs,
-                                                                    output_dir_gts,
-                                                                    verbose,
-                                                                    overwrite,
-                                                                    delete_structs_dir=False)
+                list_of_lists_newly_prepro = handle_dicoms(
+                                                not_preprocessed_case_dirs,
+                                                output_prepro_dir,
+                                                rtstruct_processing,
+                                                output_dir_structs,
+                                                output_dir_gts,
+                                                verbose,
+                                                overwrite,
+                                                delete_structs_dir=False)
             elif handling_subdir_niftis:
                 list_of_lists_newly_prepro = handle_subdir_niftis(not_preprocessed_case_dirs,
                                                             output_prepro_dir,
-                                                            incl_rtstructs,
+                                                            rtstruct_processing,
                                                             output_dir_gts,
                                                             verbose)
         else:
@@ -161,7 +161,6 @@ def pre_process(input_path,
             list_of_lists_pred = list_of_lists_prepro
         if not list_of_lists_pred:
             print("All cases have existing predictions. Nothing to infer.")
-            print(f"CT DICOM case map: {ct_dicom_case_map}")
         return list_of_lists_prepro, list_of_lists_pred, ct_dicom_case_map
 
     elif handling_flattened_niftis:
@@ -213,8 +212,9 @@ def pre_process(input_path,
 
 def find_preprocessed(case_dirs, 
                         output_prepro_dir, 
-                        incl_rtstructs, 
+                        rtstruct_processing, 
                         output_dir_gts, 
+                        handling_dicoms,
                         verbose):
 
     if not case_dirs:
@@ -224,6 +224,8 @@ def find_preprocessed(case_dirs,
     not_preprocessed_case_dirs = []
     list_of_lists_already_prepro = []
 
+    ct_dicom_case_map = defaultdict(list) # Map of case names to CT DICOM directories (only for DICOM input)
+
     for case_dir in case_dirs:
         case_name = case_dir.name
         ct_path = Path(output_prepro_dir) / f"{case_name}_0000.nii.gz"
@@ -231,10 +233,10 @@ def find_preprocessed(case_dirs,
 
         ct_done, pt_done, gt_done = confirm_already_preprocessed(
             ct_path, pt_path, output_dir_gts,
-            case_name, incl_rtstructs, verbose
+            case_name, rtstruct_processing, verbose
         )
 
-        if not (ct_done and pt_done and (not incl_rtstructs or gt_done)):
+        if not (ct_done and pt_done and (not rtstruct_processing or gt_done)):
             if verbose:
                 print(f"Case {case_name} is NOT fully preprocessed. Will process.")
             not_preprocessed_case_dirs.append(case_dir)
@@ -243,15 +245,27 @@ def find_preprocessed(case_dirs,
                 print(f"Case {case_name} is fully preprocessed. Skipping.")
             list_of_lists_already_prepro.append([str(ct_path), str(pt_path)])
 
-    return not_preprocessed_case_dirs, list_of_lists_already_prepro
+        if handling_dicoms and rtstruct_processing:
+            case_name = case_dir.name
+            for study_dir in case_dir.iterdir():
+                if study_dir.is_dir():
+                    print(f"Checking study directory {study_dir}")
+                    ct_dicom_dir = get_ct_dicom_dir(study_dir)
+                    if ct_dicom_dir:
+                        # Only store the first found CT DICOM dir as a string
+                        if case_name not in ct_dicom_case_map:
+                            ct_dicom_case_map[case_name] = ct_dicom_dir
+                            print(f"Mapping case {case_name} to CT DICOM directory {ct_dicom_dir}")
+
+    return not_preprocessed_case_dirs, list_of_lists_already_prepro, ct_dicom_case_map
 
 def confirm_already_preprocessed(ct_path, pt_path, output_dir_gts, 
-                                case_name, incl_rtstructs, verbose=False):
+                                case_name, rtstruct_processing, verbose=False):
     ct_done = ct_path.exists()
     pt_done = pt_path.exists()
     gt_done = False
 
-    if incl_rtstructs:
+    if rtstruct_processing:
         gt_file = output_dir_gts / f"{case_name}.nii.gz"
         gt_done = gt_file.exists() #and any(gt_dir.glob("*.nii.gz"))
         if verbose:
@@ -280,9 +294,9 @@ def find_predicted(list_of_lists_prepro, output_pred_dir, verbose=True):
 
 # DICOM HANDLING
 
-def handle_dicoms(case_dirs,
+def handle_dicoms(not_preprocessed_case_dirs,
                     output_prepro_dir,
-                    incl_rtstructs, 
+                    rtstruct_processing, 
                     output_dir_structs, 
                     output_dir_gts, 
                     verbose, 
@@ -290,14 +304,12 @@ def handle_dicoms(case_dirs,
                     delete_structs_dir):
     # Make dir to store pre-processed NIfTIs in
     case_dict = defaultdict(list)
-    # Make dir for mapping case names to CT DICOM dirs
-    ct_dicom_case_map = defaultdict(list)
 
-    if not case_dirs:
+    if not not_preprocessed_case_dirs:
         print(f"No case directories found. Nothing to process.")
-        return [], ct_dicom_case_map
+        return []
 
-    for case_dir in tqdm(case_dirs, desc="Pre-processing DICOM cases"):
+    for case_dir in tqdm(not_preprocessed_case_dirs, desc="Pre-processing DICOM cases"):
         # print(f"Processing case directory: {case_dir}")
         case_name = case_dir.name
         if verbose:
@@ -319,17 +331,11 @@ def handle_dicoms(case_dirs,
             # Regardless of further processing, add paths to case_dict for later inference
 
             ct_done, pt_done, gt_done = confirm_already_preprocessed(ct_path, pt_path, output_dir_gts, 
-                                                                    case_name, incl_rtstructs, verbose)
-
-            # Always record CT DICOM dir for mapping
-            if 'CT' in dicom_series:
-                ct_dicom_dir = dicom_series['CT'][0]
-                ct_dicom_case_map[case_name] = str(ct_dicom_dir)
-                print(f"CT DICOM dir for case {case_name}: {ct_dicom_dir}")
+                                                                    case_name, rtstruct_processing, verbose)
 
             # Skip if all required parts are done
-            if (not overwrite) and (ct_done and pt_done and (not incl_rtstructs or gt_done)):
-                print(f"Skipping {case_name} (preprocessed CT, PET{', GT' if incl_rtstructs else ''} found).") #at {shorten_path(output_prepro_dir)}).
+            if (not overwrite) and (ct_done and pt_done and (not rtstruct_processing or gt_done)):
+                print(f"Skipping {case_name} (preprocessed CT, PET{', GT' if rtstruct_processing else ''} found).") #at {shorten_path(output_prepro_dir)}).
                 # Add preprocessed paths to case_dict
                 case_dict[case_name].extend([str(ct_path), str(pt_path)])
                 continue
@@ -352,9 +358,13 @@ def handle_dicoms(case_dirs,
                                     sizes,
                                     verbose)
 
-            if incl_rtstructs and not gt_done: # and 'RTSTRUCT' in dicom_series
-                process_rtstruct(dicom_series, study_dir, case_name, 
-                                    output_dir_structs, output_dir_gts, verbose)
+            if rtstruct_processing and not gt_done: # and 'RTSTRUCT' in dicom_series
+                process_rtstruct(dicom_series, 
+                                    study_dir, 
+                                    case_name, 
+                                    output_dir_structs, 
+                                    output_dir_gts, 
+                                    verbose)
 
             if 'CT' in sizes and 'PT' in sizes and sizes['CT'] != sizes['PT']:
                 if verbose:
@@ -373,7 +383,7 @@ def handle_dicoms(case_dirs,
     list_of_lists = [sorted(files) for files in case_dict.values()]
     if not list_of_lists:
         print(f"No valid PET/CT files collated from filtered case_dirs. Nothing to process.")
-    return list_of_lists, ct_dicom_case_map
+    return list_of_lists
 
 def dicom_to_nifti(dicom_dir: str,
                     nifti_path: str,
@@ -481,30 +491,34 @@ def process_rtstruct(dicom_series,
                         ):
     ct_dir = dicom_series['CT'][0]
     ct_dcm = next(ct_dir.glob("*.dcm"), None)
-    output_dir_struct = output_dir_structs / case_name
-    os.makedirs(output_dir_struct, exist_ok=True)
 
     rtstruct_dirs = dicom_series.get('RTSTRUCT', [])
     rt_dcm = next(rtstruct_dirs[0].glob("*.dcm"), None) if rtstruct_dirs else None
-    
-    if not rt_dcm:
-        print(f"No RTSTRUCT DICOM file found in {shorten_path(study_dir)}. Creating empty GT mask instead.")
+    print(f"RTSTRUCT DICOM file for {case_name}: {rt_dcm}")
 
-        # Load full CT series for shape and metadata
-        reader = sitk.ImageSeriesReader()
-        series_file_names = reader.GetGDCMSeriesFileNames(str(ct_dir))
-        reader.SetFileNames(series_file_names)
-        ct_image = reader.Execute()
+    if rt_dcm is None:
+        print(f"No RTSTRUCT DICOM file found in {shorten_path(study_dir)}. Skipping GT generation for {case_name}.")
 
-        empty_mask = sitk.Image(ct_image.GetSize(), sitk.sitkUInt8)
-        empty_mask.CopyInformation(ct_image)
+        # # Load full CT series for shape and metadata
+        # reader = sitk.ImageSeriesReader()
+        # series_file_names = reader.GetGDCMSeriesFileNames(str(ct_dir))
+        # reader.SetFileNames(series_file_names)
+        # ct_image = reader.Execute()
 
-        empty_mask_path = output_dir_gts / f"{case_name}.nii.gz"
-        sitk.WriteImage(empty_mask, str(empty_mask_path))
+        # empty_mask = sitk.Image(ct_image.GetSize(), sitk.sitkUInt8)
+        # empty_mask.CopyInformation(ct_image)
 
-        if verbose:
-            print(f"Empty GT mask saved at {shorten_path(empty_mask_path)} with shape {ct_image.GetSize()}")
+        # empty_mask_path = output_dir_gts / f"{case_name}.nii.gz"
+        # sitk.WriteImage(empty_mask, str(empty_mask_path))
+
+        # if verbose:
+        #     print(f"Empty GT mask saved at {shorten_path(empty_mask_path)} with shape {ct_image.GetSize()}")
         return
+    else:
+        output_dir_structs.mkdir(parents=True, exist_ok=True)
+        output_dir_gts.mkdir(parents=True, exist_ok=True)
+        output_dir_struct = output_dir_structs / case_name
+        os.makedirs(output_dir_struct, exist_ok=True)
     
     if verbose:
         print(f"For RTSTRUCT conversion, using CT from {shorten_path(ct_dcm)} and RTSTRUCT from {shorten_path(rt_dcm)}")
@@ -537,15 +551,17 @@ def plastimatch_rtstruct_to_nifti(ct_dcm, rt_dcm, output_dir_struct,
     rt_dcm = Path(rt_dcm)
 
     try:
-        pyplastimatch.convert(
-            input=str(rt_dcm),
-            referenced_ct=str(ct_dcm),
-            output_prefix=str(output_dir_struct) + os.sep,
-            prefix_format='nii.gz',
-            prune_empty=True
-        )
-    except Exception as e:
-        raise RuntimeError(f"pyplastimatch RTSTRUCT→NIfTI conversion failed: {e}")
+        command = [
+            'plastimatch', 'convert',
+            '--input', str(rt_dcm),
+            '--referenced-ct', str(ct_dcm),
+            '--output-prefix', str(output_dir_struct) + os.sep,
+            '--prefix-format', 'nii.gz',
+            '--prune-empty',
+        ]
+        subprocess.run(command, check=True)
+    except subprocess.CalledProcessError as e:
+        raise RuntimeError(f"Plastimatch RTSTRUCT→NIfTI conversion failed: {e}")
 
     for file in output_dir_struct.glob("*.nii.gz"):
         original_filename = file.name
@@ -572,7 +588,7 @@ def plastimatch_rtstruct_to_nifti(ct_dcm, rt_dcm, output_dir_struct,
 
 def handle_subdir_niftis(case_dirs, 
                         output_prepro_dir, 
-                        incl_rtstructs, 
+                        rtstruct_processing, 
                         output_dir_gts, 
                         verbose):
     """
@@ -629,7 +645,7 @@ def handle_subdir_niftis(case_dirs,
 
         ct_done, pt_done, gt_done = confirm_already_preprocessed(
                                         ct_path, pt_path, output_dir_gts,
-                                        case_name, incl_rtstructs, verbose
+                                        case_name, rtstruct_processing, verbose
                                     )
 
         # Only add if both CT and PT are present and exist on disk
@@ -776,6 +792,22 @@ def get_modality_dirs_and_validate_pet(study_dir, verbose):
 
     return dicom_series
 
+def get_ct_dicom_dir(study_dir):
+    for dicom_dir in Path(study_dir).iterdir():
+        print(f"Checking directory for CT: {dicom_dir}")
+        if not dicom_dir.is_dir():
+            continue
+        for file in dicom_dir.iterdir():
+            if not file.is_file():
+                continue
+            try:
+                print(f"Checking file for CT: {file}")
+                ds = pydicom.dcmread(file, stop_before_pixels=True)
+                if getattr(ds, 'Modality', '').upper() == 'CT':
+                    return str(dicom_dir)
+            except Exception:
+                continue
+    return None
 
 def get_suv_bw_scale_factor(ds):
     

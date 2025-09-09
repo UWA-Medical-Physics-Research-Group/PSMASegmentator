@@ -46,9 +46,9 @@ from monai.transforms import Compose, NormalizeIntensity
 import csv
 from datetime import datetime
 import subprocess
+import pydicom
 
 from psma_segmentator.pre_processing import shorten_path
-import pyplastimatch
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(message)s")
 
@@ -450,19 +450,8 @@ def seg_to_rtstruct(output_pred_dir,
                     rtstruct_dir, 
                     verbose,
                     overwrite):
-    """
-    Converts a NIfTI segmentation to RTSTRUCT using metadata from the original CT DICOM series.
-    Args:
-        seg_nifti_path (str or Path): Path to the NIfTI segmentation file.
-        original_ct_dicom_dir (str or Path): Path to the original CT DICOM directory.
-        output_dir (str or Path, optional): Output directory for RTSTRUCT. If None, creates alongside output dir with '_outputs_rtstructs'.
-        verbose (bool): Print detailed info.
-    Returns:
-        Path to the generated RTSTRUCT file.
-    """
     seg_files = [f for f in os.listdir(output_pred_dir) if f.endswith('.nii.gz')]
 
-    rtstruct_paths = []
     for seg_file in seg_files:
         seg_nifti_path = Path(output_pred_dir) / seg_file
         # Extract case_name from seg_file (remove .nii.gz and any suffixes)
@@ -475,34 +464,88 @@ def seg_to_rtstruct(output_pred_dir,
                     case_name = k
                     break
         # Get CT DICOM path from ct_dicom_case_map
-        ct_dicom_path = ct_dicom_case_map.get(case_name)
-        if not ct_dicom_path:
-            print(f"Warning: No CT DICOM path found for case {case_name} at {ct_dicom_path}. Skipping RTSTRUCT conversion for {seg_file}.")
+        ct_dicom_dir = ct_dicom_case_map.get(case_name)
+        print(f"CT DICOM dir for case {case_name}: {ct_dicom_dir}")
+        if not ct_dicom_dir:
+            print(f"Warning: No CT DICOM path found for case {case_name} at {ct_dicom_dir}. Skipping RTSTRUCT conversion for {seg_file}.")
             continue
-        ct_dicom_path = Path(ct_dicom_path)
-        rtstruct_name = seg_nifti_path.stem + '.dcm'
-        rtstruct_path = os.path.join(rtstruct_dir, rtstruct_name)
+        # Read first CT DICOM file to extract patient info
+        ct_dicom_files = [f for f in os.listdir(ct_dicom_dir)]
+        patient_id = case_name
+        patient_name = case_name
+        series_description = f'PSMASegmentator_RTSTRUCT_{case_name}'
+        if ct_dicom_files:
+            first_ct_dicom = os.path.join(ct_dicom_dir, ct_dicom_files[0])
+            try:
+                ds_ct = pydicom.dcmread(first_ct_dicom, stop_before_pixels=True)
+                patient_id = getattr(ds_ct, 'PatientID', case_name)
+                patient_name = getattr(ds_ct, 'PatientName', case_name)
+                series_description = getattr(ds_ct, 'SeriesDescription', f'PSMASegmentator_RTSTRUCT_{case_name}')
+            except Exception as e:
+                print(f"Warning: Could not read CT DICOM file {first_ct_dicom}: {e}")
+        else:
+            print(f"Warning: No CT DICOM files found in {ct_dicom_dir}. Using default patient info.")
+        rtstruct_name = f"{case_name}"
+        rtstruct_dir_case = os.path.join(rtstruct_dir, rtstruct_name)
         # Check if RTSTRUCT already exists
-        if os.path.exists(rtstruct_path) and not overwrite:
-            if verbose:
-                print(f"RTSTRUCT already exists for {case_name} at {rtstruct_path}. Skipping (overwrite=False).")
-            rtstruct_paths.append(rtstruct_path)
-            continue
+        if os.path.exists(rtstruct_dir_case) and not overwrite:
+            # If path is a directory, look for .dcm file inside
+            if os.path.isdir(rtstruct_dir_case):
+                dcm_files = [f for f in os.listdir(rtstruct_dir_case) if f.endswith('.dcm')]
+                if dcm_files:
+                    dcm_file_path = os.path.join(rtstruct_dir_case, dcm_files[0])
+                    try:
+                        ds = pydicom.dcmread(dcm_file_path, stop_before_pixels=True)
+                        if getattr(ds, 'Modality', None) == 'RTSTRUCT':
+                            print(f"RTSTRUCT already exists for case {case_name} at {shorten_path(dcm_file_path)}. Skipping conversion.")
+                            continue
+                    except Exception as e:
+                        print(f"Warning: Could not read DICOM file {dcm_file_path}: {e}")
+                else:
+                    if verbose:
+                        print(f"No DICOM files found in {rtstruct_dir_case}. Proceeding with conversion.")
+            else:
+                print(f"Invalid RTSTRUCT path {rtstruct_dir_case}. Skipping conversion.")
+                continue
+        else:
+            os.makedirs(rtstruct_dir_case, exist_ok=True)
+
         try:
-            pyplastimatch.convert(
-                input=str(seg_nifti_path),
-                input_format='nii',
-                referenced_ct=str(ct_dicom_path),
-                output_type='rtstruct',
-                output=str(rtstruct_path)
-            )
+            command = [
+                'plastimatch', 'convert',
+                '--input-ss-img', str(seg_nifti_path),
+                '--referenced-ct', ct_dicom_dir,
+                '--output-dicom', rtstruct_dir_case,
+                '--series-description', str(series_description),
+                '--patient-id', str(patient_id),
+                '--patient-name', str(patient_name)
+            ]
+            subprocess.run(command, check=True)
+            # Post-process RTSTRUCT to set structure name
+            # Find the .dcm file in rtstruct_dir_case
+            dcm_files = [f for f in os.listdir(rtstruct_dir_case) if f.endswith('.dcm')]
+            if dcm_files:
+                dcm_file_path = os.path.join(rtstruct_dir_case, dcm_files[0])
+                try:
+                    ds_rt = pydicom.dcmread(dcm_file_path)
+                    # Set ROIName in StructureSetROISequence
+                    if hasattr(ds_rt, 'StructureSetROISequence'):
+                        for roi in ds_rt.StructureSetROISequence:
+                            roi.ROIName = 'Total Tumor Burden'
+                    # Set ROIName in RTROIObservationsSequence (optional)
+                    if hasattr(ds_rt, 'RTROIObservationsSequence'):
+                        for obs in ds_rt.RTROIObservationsSequence:
+                            obs.ROIObservationLabel = 'Total Tumor Burden'
+                    ds_rt.save_as(dcm_file_path)
+                    if verbose:
+                        print(f"Renamed structure in RTSTRUCT to 'Total Tumor Burden' for {case_name}.")
+                except Exception as e:
+                    print(f"Warning: Could not update structure name in RTSTRUCT {dcm_file_path}: {e}")
             if verbose:
-                print(f"Converted {seg_nifti_path} to RTSTRUCT at {rtstruct_path} using CT DICOMs from {ct_dicom_path}")
-            rtstruct_paths.append(rtstruct_path)
-        except Exception as e:
-            print(f"ERROR: pyplastimatch NIfTI→RTSTRUCT conversion failed for {seg_file}: {e}")
+                print(f"Converted {seg_nifti_path} to RTSTRUCT at {rtstruct_dir_case} using CT DICOMs from {ct_dicom_dir}")
+        except subprocess.CalledProcessError as e:
+            print(f"ERROR: Plastimatch NIfTI→RTSTRUCT conversion failed for {seg_file}: {e}")
             continue
-    return rtstruct_paths
 
 ## Generate organ segmentations using TotalSegmentator ##
 def generate_organ_segmentations(ct_map, organ_dir, 
@@ -1308,15 +1351,21 @@ def post_process(
         ct_map[case_base] = str(ct_path)
         pet_map[case_base] = str(pt_path)
         # print(f"Mapped case {case_base}: CT={shorten_path(ct_path)}, PET={shorten_path(pt_path)}")
-    
-    # Derive output_base from output_pred_dir
+
+    # Derive output_base from output_pred_dir (used for all output dirs/files)
     output_base = Path(output_pred_dir).name.replace('_outputs', '')
+    output_parent = str(Path(output_pred_dir).parent)
+
+    # Define all output dirs/files using output_base
+    rtstruct_dir = os.path.join(output_parent, f"{output_base}_output_rtstructs")
+    organ_dir_default = os.path.join(output_parent, f"{output_base}_organ_segmentations")
+    lesion_results_dir = os.path.join(output_parent, f"{output_base}_lesion_classification")
 
     # SUV THRESHOLDING
     if suv_thresh > 0:
-        apply_suv_threshold(pet_map, 
-                            output_pred_dir, 
-                            suv_thresh, 
+        apply_suv_threshold(pet_map,
+                            output_pred_dir,
+                            suv_thresh,
                             verbose,
                             overwrite)
         logging.info(f"Applied SUV thresholding (threshold = {suv_thresh}) to segmentation outputs in {output_pred_dir}")
@@ -1327,11 +1376,9 @@ def post_process(
 
     # RTSTRUCT CONVERSION
     if rtstruct_processing:
-        # Create rtstruct_dir by adding to output_base
-        rtstruct_dir = output_base + "_rtstructs"
         os.makedirs(rtstruct_dir, exist_ok=True)
-        logging.info(f"Converting segmentations to RTSTRUCT format in {shorten_path(rtstruct_dir)}")
-        seg_to_rtstruct(output_pred_dir, 
+        logging.info(f"Converting segmentations to RTSTRUCT format and saving to {rtstruct_dir}")
+        seg_to_rtstruct(output_pred_dir,
                         ct_dicom_case_map,
                         ct_map,
                         rtstruct_dir,
@@ -1340,17 +1387,16 @@ def post_process(
 
     # ORGAN SEGMENTATION
     if organ_dir is None:
-        organ_dir = str(Path(output_pred_dir).parent / (Path(output_pred_dir).name.replace('_outputs', '_organ_segmentations')))
+        organ_dir = organ_dir_default
         logging.info(f"No organ segmentation directory specified. Using default: {shorten_path(organ_dir)}")
     else:
         logging.info(f"Using user-specified organ segmentation directory: {shorten_path(organ_dir)}")
     os.makedirs(organ_dir, exist_ok=True)
     # Generate organ segmentations for each case in ct_map
-    generate_organ_segmentations(ct_map, organ_dir, 
+    generate_organ_segmentations(ct_map, organ_dir,
                                     device, fast, verbose)
 
     # LESION CLASSIFICATION (and metrics: iterate over cases in output_pred_dir)
-    lesion_results_dir = os.path.join(Path(output_pred_dir).parent, Path(output_pred_dir).name.replace('_outputs', '_lesion_classification'))
     os.makedirs(lesion_results_dir, exist_ok=True)
     lesion_results_json_path = os.path.join(lesion_results_dir, lesion_results_json)
     if not overwrite and os.path.exists(lesion_results_json_path):
@@ -1377,7 +1423,7 @@ def post_process(
     # LIVER DISEASE CLASSIFICATION - [ADD THAT THIS IS ONLY DONE IF LIVER DISEASE NOT ALREADY CLASSIFIED]
     # liver_model_path = '/media/joel/Pal_CT/PSMA-PET/Models/Liver_classifier/full_train/exp1_high_alpha/run_20250704-190755/best_model.pth'
     # Update lesion results with liver mets classification
-    update_liver_mets(lesion_results_dict, 
+    update_liver_mets(lesion_results_dict,
                         ct_map=ct_map,
                         pet_map=pet_map,
                         organ_dir=organ_dir,
