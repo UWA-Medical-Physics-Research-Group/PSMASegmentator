@@ -31,6 +31,7 @@ from collections import defaultdict
 import subprocess
 from tqdm import tqdm
 import matplotlib.pyplot as plt
+import csv
 
 # SUPPLEMENTARY FUNCTIONS
 
@@ -87,9 +88,9 @@ def resample_ct_to_pet(ct_path, pt_path, verbose):
     if resampled_ct.GetSize() != pt_img.GetSize():
         raise RuntimeError(f"Resampling CT ({shorten_path(ct_path)}) to PET ({shorten_path(pt_path)}) failed: CT size {resampled_ct.GetSize()} does not match PET size {pt_img.GetSize()}")
 
-    if verbose:
-        print(f"Resampled CT saved at {shorten_path(ct_path)} with shape {resampled_ct.GetSize()} to match PET shape {pt_img.GetSize()}")
-        print(f"PET path: {shorten_path(pt_path)}")
+    # if verbose:
+    print(f"Resampled CT saved at {shorten_path(ct_path)} with shape {resampled_ct.GetSize()} to match PET shape {pt_img.GetSize()}")
+        # print(f"PET path: {shorten_path(pt_path)}")
 
 # MAIN PRE-PROCESSING FUNCTION
 
@@ -124,7 +125,9 @@ def pre_process(input_path,
             handling_dicoms,
             verbose
         )
-        print(f"not_preprocessed_case_dirs: {not_preprocessed_case_dirs}; list_of_lists_already_prepro: {list_of_lists_already_prepro}; ct_dicom_case_map: {ct_dicom_case_map}")
+        # print(f"not_preprocessed_case_dirs: {not_preprocessed_case_dirs}; list_of_lists_already_prepro: {list_of_lists_already_prepro}; ct_dicom_case_map: {ct_dicom_case_map}")
+        print(f"Cases needing preprocessing ({len(not_preprocessed_case_dirs)}): {[d.name for d in not_preprocessed_case_dirs]}")
+        print(f"Cases already preprocessed ({len(list_of_lists_already_prepro)}): {[Path(p[0]).stem.rsplit('_000', 1)[0] for p in list_of_lists_already_prepro]}")
 
         # 3. For post-processing, use all preprocessed cases
         if not_preprocessed_case_dirs:
@@ -147,7 +150,8 @@ def pre_process(input_path,
                                                             verbose)
         else:
             list_of_lists_newly_prepro = []
-        print(f"newly_preprocessed: {list_of_lists_newly_prepro};")
+        # print(f"newly_preprocessed: {list_of_lists_newly_prepro};")
+        print(f"Cases newly preprocessed ({len(list_of_lists_newly_prepro)}): {[Path(p[0]).stem.rsplit('_000', 1)[0] for p in list_of_lists_newly_prepro]}")
         list_of_lists_prepro = list_of_lists_already_prepro + list_of_lists_newly_prepro
 
         # 4. For prediction, process only cases needing prediction
@@ -226,17 +230,47 @@ def find_preprocessed(case_dirs,
 
     ct_dicom_case_map = defaultdict(list) # Map of case names to CT DICOM directories (only for DICOM input)
 
-    for case_dir in case_dirs:
+    for case_dir in tqdm(case_dirs, desc="Checking cases for preprocessing"):
         case_name = case_dir.name
         ct_path = Path(output_prepro_dir) / f"{case_name}_0000.nii.gz"
         pt_path = Path(output_prepro_dir) / f"{case_name}_0001.nii.gz"
 
+        if handling_dicoms and rtstruct_processing:
+            rtstruct_found = False
+            for study_dir in case_dir.iterdir():
+                if study_dir.is_dir():
+                    # print(f"Checking study directory {study_dir}")
+                    dicom_dir, modality = get_dicom_dir_and_type(study_dir)
+                    if dicom_dir:
+                        if modality == 'CT':
+                            # Only store the first found CT DICOM dir as a string
+                            if case_name not in ct_dicom_case_map:
+                                ct_dicom_case_map[case_name] = dicom_dir
+                                # print(f"Mapping case {case_name} to CT DICOM directory {dicom_dir}")
+                        elif modality == 'PT':
+                            continue
+                        elif modality == 'RTSTRUCT':
+                            rtstruct_found = True
+                            print(f"Found RTSTRUCT DICOM directory {dicom_dir} for case {case_name}")
+            if not rtstruct_found:
+                if verbose:
+                    print(f"No RTSTRUCT DICOM directory found for case {case_name}. GT generation will be skipped.")
+
         ct_done, pt_done, gt_done = confirm_already_preprocessed(
-            ct_path, pt_path, output_dir_gts,
-            case_name, rtstruct_processing, verbose
+            ct_path, 
+            pt_path, 
+            output_dir_gts,
+            case_name, 
+            rtstruct_found,
+            verbose
         )
 
-        if not (ct_done and pt_done and (not rtstruct_processing or gt_done)):
+        if rtstruct_found:
+            needs_preprocessing = not (ct_done and pt_done and gt_done)
+        else:
+            needs_preprocessing = not (ct_done and pt_done)
+
+        if needs_preprocessing:
             if verbose:
                 print(f"Case {case_name} is NOT fully preprocessed. Will process.")
             not_preprocessed_case_dirs.append(case_dir)
@@ -244,28 +278,44 @@ def find_preprocessed(case_dirs,
             if verbose:
                 print(f"Case {case_name} is fully preprocessed. Skipping.")
             list_of_lists_already_prepro.append([str(ct_path), str(pt_path)])
-
-        if handling_dicoms and rtstruct_processing:
-            case_name = case_dir.name
-            for study_dir in case_dir.iterdir():
-                if study_dir.is_dir():
-                    print(f"Checking study directory {study_dir}")
-                    ct_dicom_dir = get_ct_dicom_dir(study_dir)
-                    if ct_dicom_dir:
-                        # Only store the first found CT DICOM dir as a string
-                        if case_name not in ct_dicom_case_map:
-                            ct_dicom_case_map[case_name] = ct_dicom_dir
-                            print(f"Mapping case {case_name} to CT DICOM directory {ct_dicom_dir}")
+                            
 
     return not_preprocessed_case_dirs, list_of_lists_already_prepro, ct_dicom_case_map
 
-def confirm_already_preprocessed(ct_path, pt_path, output_dir_gts, 
-                                case_name, rtstruct_processing, verbose=False):
+def confirm_already_preprocessed(ct_path, 
+                                    pt_path, 
+                                    output_dir_gts, 
+                                    case_name, 
+                                    rtstruct_found,
+                                    verbose=False):
     ct_done = ct_path.exists()
     pt_done = pt_path.exists()
     gt_done = False
 
-    if rtstruct_processing:
+    # Only check shape/spacing if both CT and PT exist
+    match = True
+    if ct_done and pt_done:
+        try:
+            ct_img = sitk.ReadImage(str(ct_path))
+            pt_img = sitk.ReadImage(str(pt_path))
+            ct_size = ct_img.GetSize()
+            pt_size = pt_img.GetSize()
+            ct_spacing = ct_img.GetSpacing()
+            pt_spacing = pt_img.GetSpacing()
+            if verbose:
+                print(f"[DEBUG] {case_name}: CT size {ct_size}, spacing {ct_spacing}; PT size {pt_size}, spacing {pt_spacing}")
+            if ct_size != pt_size or ct_spacing != pt_spacing:
+                match = False
+                print(f"[Shape/Spacing Mismatch] {case_name}: CT size {ct_size}, spacing {ct_spacing} != PT size {pt_size}, spacing {pt_spacing}")
+                
+        except Exception as e:
+            match = False
+            if verbose:
+                print(f"[Error] Could not read CT/PT for shape/spacing check: {e}")
+    if ct_done and pt_done and not match:
+        ct_done = pt_done = False
+
+    if rtstruct_found: # Only check GT if RTSTRUCT processing is enabled and RTSTRUCT was found
         gt_file = output_dir_gts / f"{case_name}.nii.gz"
         gt_done = gt_file.exists() #and any(gt_dir.glob("*.nii.gz"))
         if verbose:
@@ -310,8 +360,8 @@ def handle_dicoms(not_preprocessed_case_dirs,
         return []
 
     for case_dir in tqdm(not_preprocessed_case_dirs, desc="Pre-processing DICOM cases"):
-        # print(f"Processing case directory: {case_dir}")
         case_name = case_dir.name
+        print(f"Processing case: {case_name}")
         if verbose:
             print("="*60)
             print(f"\nCase: {case_name}")
@@ -322,53 +372,28 @@ def handle_dicoms(not_preprocessed_case_dirs,
                 print(f"Skipping {shorten_path(study_dir)}: not a directory.")
                 continue
 
-            dicom_series = get_modality_dirs_and_validate_pet(study_dir, verbose)
-            if dicom_series is None:  # the study failed the check
-                # Error message already printed in get_modality_dirs_and_validate_pet
+            dicom_series = get_modality_dirs_and_validate_pet(study_dir,
+                                                                output_dir=output_prepro_dir,
+                                                                verbose=verbose)
+            if dicom_series is None:
                 continue
 
-            ct_path, pt_path = Path(f"{output_prepro_dir}/{case_name}_0000.nii.gz"), Path(f"{output_prepro_dir}/{case_name}_0001.nii.gz")
-            # Regardless of further processing, add paths to case_dict for later inference
-
-            ct_done, pt_done, gt_done = confirm_already_preprocessed(ct_path, pt_path, output_dir_gts, 
-                                                                    case_name, rtstruct_processing, verbose)
-
-            # Skip if all required parts are done
-            if (not overwrite) and (ct_done and pt_done and (not rtstruct_processing or gt_done)):
-                print(f"Skipping {case_name} (preprocessed CT, PET{', GT' if rtstruct_processing else ''} found).") #at {shorten_path(output_prepro_dir)}).
-                # Add preprocessed paths to case_dict
-                case_dict[case_name].extend([str(ct_path), str(pt_path)])
-                continue
-
+            ct_path = Path(f"{output_prepro_dir}/{case_name}_0000.nii.gz")
+            pt_path = Path(f"{output_prepro_dir}/{case_name}_0001.nii.gz")
             sizes = {}
+            spacings = {}
 
             if 'CT' in dicom_series:
-                if not ct_done:
-                    process_dicom(dicom_series, 
-                                    'CT', 
-                                    ct_path, 
-                                    sizes,
-                                    verbose)
+                process_dicom(dicom_series, 'CT', ct_path, sizes, spacings, verbose)
 
             if 'PT' in dicom_series:
-                if not pt_done:
-                    process_dicom(dicom_series, 
-                                    'PT', 
-                                    pt_path, 
-                                    sizes,
-                                    verbose)
+                process_dicom(dicom_series, 'PT', pt_path, sizes, spacings, verbose)
 
-            if rtstruct_processing and not gt_done: # and 'RTSTRUCT' in dicom_series
-                process_rtstruct(dicom_series, 
-                                    study_dir, 
-                                    case_name, 
-                                    output_dir_structs, 
-                                    output_dir_gts, 
-                                    verbose)
+            if rtstruct_processing:
+                process_rtstruct(dicom_series, study_dir, case_name, output_dir_structs, output_dir_gts, verbose)
 
-            if 'CT' in sizes and 'PT' in sizes and sizes['CT'] != sizes['PT']:
-                if verbose:
-                    print(f"CT and PET sizes ({sizes['CT']} | {sizes['PT']}) do not match for {case_name}. Resampling required.")
+            if 'CT' in sizes and 'PT' in sizes and (sizes['CT'] != sizes['PT']) and (spacings['CT'] != spacings['PT']):
+                print(f"WARNING: CT and PET sizes/spacings ({sizes['CT']} | {sizes['PT']})/({spacings['CT']} | {spacings['PT']}) do not match for {case_name}. Resampling required.")
                 resample_ct_to_pet(ct_path, pt_path, verbose)
 
             # Add preprocessed paths to case_dict - CURRENTLY ASSUMES ONE STUDY PER CASE
@@ -403,7 +428,7 @@ def dicom_to_nifti(dicom_dir: str,
         volume *= suv_factor
 
         sitk.WriteImage(volume, nifti_path)
-        return volume.GetSize()
+        return volume.GetSize(), volume.GetSpacing()
 
     else:
         if verbose:
@@ -461,23 +486,26 @@ def dicom_to_nifti(dicom_dir: str,
         sitk.WriteImage(volume_sitk, nifti_path)
         if verbose:
             print(f"Wrote CT NIfTI to: {nifti_path}")
-        return volume_sitk.GetSize()
+        return volume_sitk.GetSize(), volume_sitk.GetSpacing()
 
 def process_dicom(dicom_series, 
                     modality, 
                     nifti_path, 
                     sizes,
-                    verbose):
+                    spacings,
+                    verbose
+                ):
     dicom_dir = dicom_series[modality][0]
     ds = dicom_series[modality][1]
     is_pet = modality == "PT"
 
-    size = dicom_to_nifti(dicom_dir,
+    size, spacing = dicom_to_nifti(dicom_dir,
                             nifti_path, 
                             is_pet, 
                             ds, 
                             verbose)
     sizes[modality] = size
+    spacings[modality] = spacing
 
 
 # RTSTRUCT HANDLING
@@ -697,12 +725,19 @@ def handle_flattened_niftis(nii_files,
 
 # MODALITY AND PET VALIDATION
 
-def get_modality_dirs_and_validate_pet(study_dir, verbose):
+
+def get_modality_dirs_and_validate_pet(study_dir, 
+                                        output_dir=None,
+                                        verbose=False):
     """
     Checks all DICOM dirs in a study, groups them by modality (CT/PT), and validates PET if found.
     Returns a dict like {'CT': [Path], 'PT': [Path]} or empty dict if PET is invalid.
     """
     dicom_series = defaultdict(list)
+    # Use a global or external error log if available
+    global error_log
+    if 'error_log' not in globals():
+        error_log = []
 
     for dicom_dir in study_dir.iterdir():
         if not dicom_dir.is_dir():
@@ -710,9 +745,7 @@ def get_modality_dirs_and_validate_pet(study_dir, verbose):
 
         modalities_present = set()
         representative_ds = None
-
         ext_missing = False
-
         for file in dicom_dir.iterdir():  # dicom_dir.glob("*.dcm"):
             if not file.is_file():
                 continue
@@ -733,12 +766,24 @@ def get_modality_dirs_and_validate_pet(study_dir, verbose):
         tomo_modalities_found = modalities_present & tomographic_modalities
         non_tomo_modalities = modalities_present - tomographic_modalities
 
+        # Get case name for error log
+        case_name = Path(study_dir).name
+
         if len(tomo_modalities_found) > 1:
-            print(f"ERROR: Conflicting tomographic modalities in {shorten_path(dicom_dir)}: {tomo_modalities_found}. Skipping entire study.")
+            msg = f"Conflicting tomographic modalities in {shorten_path(dicom_dir, 5)}: {tomo_modalities_found}. Skipping entire study."
+            print(f"ERROR: {msg}")
+            error_log.append({'case': case_name, 'reason': msg})
             return None
 
         if tomo_modalities_found and non_tomo_modalities:
-            print(f"WARNING: Tomographic modality {tomo_modalities_found} mixed with non-tomographic {non_tomo_modalities} in {shorten_path(dicom_dir)}. Proceeding.")
+            msg = f"Tomographic modality {tomo_modalities_found} mixed with non-tomographic {non_tomo_modalities} in {shorten_path(dicom_dir, 5)}. Proceeding."
+            print(f"WARNING: {msg}")
+            # Not a skip, just a warning
+
+        if representative_ds is not None:
+            modality = representative_ds.Modality.upper()
+        else:
+            modality = None
 
         if modality == "PT":
             missing_tags = []
@@ -769,7 +814,9 @@ def get_modality_dirs_and_validate_pet(study_dir, verbose):
                     missing_tags.append(f"RadiopharmaceuticalInformationSequence[0].{attr}")
 
             if missing_tags:
-                print(f"Invalid PET series found in {shorten_path(dicom_dir)}. Missing or incorrect: {missing_tags}. Skipping entire study.")
+                msg = f"Invalid PET series found in {shorten_path(dicom_dir, 5)}. Missing or incorrect: {missing_tags}. Skipping entire study."
+                print(msg)
+                error_log.append({'case': case_name, 'reason': msg})
                 return None
 
         # Only attempt SimpleITK read for CT and PT
@@ -781,33 +828,53 @@ def get_modality_dirs_and_validate_pet(study_dir, verbose):
                 test_reader.SetFileName(series_file_names[0])
                 test_reader.ReadImageInformation()
             except Exception as e:
-                print(f"SimpleITK header read failed in {shorten_path(dicom_dir)}. Skipping entire study. Error: {str(e)}")
+                msg = f"SimpleITK header read failed in {shorten_path(dicom_dir, 5)}. Skipping entire study. Error: {str(e)}"
+                print(msg)
+                error_log.append({'case': case_name, 'reason': msg})
                 return None
 
-        dicom_series[modality] = (dicom_dir, ds)
+        if modality is not None:
+            dicom_series[modality] = (dicom_dir, ds)
 
     if not {'CT', 'PT'}.issubset(dicom_series.keys()):
         print(f"CT and/or PET series not found in {shorten_path(study_dir)}. Skipping entire study.")
         return None
 
+    # Save error log if output_dir is provided and there are errors
+    if output_dir is not None and error_log:
+        parent_dir = Path(output_dir).parent
+        parent_dir.mkdir(parents=True, exist_ok=True)
+        error_log_path = parent_dir / "preprocessing_error_log.csv"
+        with open(error_log_path, "w", newline="") as csvfile:
+            writer = csv.DictWriter(csvfile, fieldnames=["case", "reason"])
+            writer.writeheader()
+            for row in error_log:
+                writer.writerow(row)
+        print(f"[INFO] Error log saved to {error_log_path}")
     return dicom_series
 
-def get_ct_dicom_dir(study_dir):
+def get_dicom_dir_and_type(study_dir):
     for dicom_dir in Path(study_dir).iterdir():
-        print(f"Checking directory for CT: {dicom_dir}")
+        # print(f"Checking directory for CT: {dicom_dir}")
         if not dicom_dir.is_dir():
             continue
         for file in dicom_dir.iterdir():
             if not file.is_file():
                 continue
             try:
-                print(f"Checking file for CT: {file}")
                 ds = pydicom.dcmread(file, stop_before_pixels=True)
                 if getattr(ds, 'Modality', '').upper() == 'CT':
-                    return str(dicom_dir)
+                    return str(dicom_dir), 'CT'
+                elif getattr(ds, 'Modality', '').upper() == 'PT':
+                    return str(dicom_dir), 'PT'
+                elif getattr(ds, 'Modality', '').upper() == 'RTSTRUCT':
+                    return str(dicom_dir), 'RTSTRUCT'
+                else:
+                    print(f"Skipping DICOM dir {shorten_path(dicom_dir)}: unsupported modality {getattr(ds, 'Modality', 'N/A')}.")
+                    continue
             except Exception:
                 continue
-    return None
+    return None, None
 
 def get_suv_bw_scale_factor(ds):
     
