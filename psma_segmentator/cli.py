@@ -21,7 +21,6 @@ along with this program.  If not, see <https://www.gnu.org/licenses/>.
 import argparse
 import re
 import os
-from psma_segmentator.python_api import psma_segmentator
 
 def main():
     parser = argparse.ArgumentParser(description="PSMA PET/CT Auto-Segmentation Tool.")
@@ -107,6 +106,9 @@ def main():
             gpu_idx = args.device.split(":")[1]
             os.environ["CUDA_VISIBLE_DEVICES"] = gpu_idx
             print(f"Restricted CUDA visibility to GPU {gpu_idx}")
+
+    # import here so CUDA_VISIBLE_DEVICES is set before any torch import inside psma_segmentator
+    from psma_segmentator.python_api import psma_segmentator
 
     psma_segmentator(
                 input_dir = args.input_dir, 

@@ -35,6 +35,12 @@ cd path/to/where/you/put/PSMASegmentator
 pip install -e .
 ```
 
+Note: if you want the output segmentations in RTSTRUCT format (see below), you'll need `plastimatch`. This can be installed system-wide via:
+
+```bash
+sudo apt install plastimatch
+```
+
 ---
 
 ## Usage
@@ -173,7 +179,7 @@ If `--rtstruct_processing` is enabled and an RTSTRUCT series is present alongsid
 
 ---
 
-## Inference and Output
+## Inference and Output Segmentations
 
 An `nnUNetPredictor` is used for inference with the downloaded model weights, with the output predictions being saved to the specified (or default) `output_dir`. 
 
@@ -195,9 +201,15 @@ After segmentation, post-processing is performed to classify lesions and extract
 #### Liver disease classification:
   A complimentary binary classifier model is present to detect the presence of liver metastases, a significant negative prognosticator.
 
-#### Results JSON output:
+---
 
-A `lesion_results.json` (or `lesion_results_suv_thresh_{X}.json` if SUV thresholding is applied) is saved in the output directory. It contains an entry for each case, consisting of:
+## Output Summary Files
+
+The following output files are saved in the specified output directory or, by default, the `[input_folder]_lesion_classification` sub-folder.
+
+### Results JSON:
+
+A `lesion_results.json` (or `lesion_results_suv_thresh_{X}.json` if SUV thresholding is applied). It contains an entry for each case, consisting of:
 - `lesions`: Dictionary providing the `TotalSegmentator` site code and name, and volume (in cc) for each segmented lesion.
 - `lesion_metrics`: A collated dictionary containing:
 
@@ -208,3 +220,16 @@ A `lesion_results.json` (or `lesion_results_suv_thresh_{X}.json` if SUV threshol
 A final 'All' entry collates the site- and region-level metrics across all provided cases. 
 
 This step runs automatically after inference, unless the output JSON already exists and `--overwrite` is not set.
+
+### Results CSV:
+
+A `biomarker_info.csv` file. Each row corresponds to a case, with column headings of:
+
+- Tumour SUVmean
+- Tumour SUVmax
+- Total tumour lesion count
+- PSMA Total Tumour Volume (TTV)
+- Bone metastases present (True/False)
+- Liver metastases present (True/False)
+
+---

@@ -193,9 +193,15 @@ def pre_process(input_path,
         base = ct_path.stem.rsplit('_000', 1)[0] if '_000' in ct_path.stem else ct_path.stem
         ct_img = sitk.ReadImage(str(ct_path))
         pt_img = sitk.ReadImage(str(pt_path))
-        # Check if CT and PET sizes match
-        if ct_img.GetSize() != pt_img.GetSize():
-            print(f"CT and PET sizes ({ct_img.GetSize()} | {pt_img.GetSize()}) do not match for {base}. Resampling required.")
+
+        # Acquire sizes and spacings
+        ct_size = ct_img.GetSize()
+        pt_size = pt_img.GetSize()
+        ct_spacing = ct_img.GetSpacing()
+        pt_spacing = pt_img.GetSpacing()
+        # Resample if sizes OR SPACINGS differ
+        if ct_size != pt_size or ct_spacing != pt_spacing:
+            print(f"CT and PET sizes ({ct_size} | {pt_size}) / spacings ({ct_spacing} | {pt_spacing}) do not match for {base}. Resampling required.")
             resample_ct_to_pet(ct_path, pt_path, verbose=True)
         # Always include in preprocessed list
         list_of_lists_prepro = [[str(ct_path), str(pt_path)]]
@@ -235,8 +241,9 @@ def find_preprocessed(case_dirs,
         ct_path = Path(output_prepro_dir) / f"{case_name}_0000.nii.gz"
         pt_path = Path(output_prepro_dir) / f"{case_name}_0001.nii.gz"
 
+        rtstruct_found = False
+
         if handling_dicoms and rtstruct_processing:
-            rtstruct_found = False
             for study_dir in case_dir.iterdir():
                 if study_dir.is_dir():
                     # print(f"Checking study directory {study_dir}")
@@ -692,7 +699,7 @@ def handle_flattened_niftis(nii_files,
     case_dict = defaultdict(list)
     print(f"Existing NIfTI files found. Collating and using these directly for inference.")
 
-    for f in nii_files:
+    for f in tqdm(nii_files, desc="Processing flattened NIfTI files"):
         print(f"Processing {shorten_path(f)}")
         base = f.stem.rsplit('_000', 1)[0]
         nii_path = Path(output_prepro_dir) / f"{base}.nii.gz"
@@ -704,9 +711,13 @@ def handle_flattened_niftis(nii_files,
         if ct_path.exists() and pt_path.exists():
             ct_img = sitk.ReadImage(str(ct_path))
             pt_img = sitk.ReadImage(str(pt_path))
-            if ct_img.GetSize() != pt_img.GetSize():
+            ct_size = ct_img.GetSize()
+            pt_size = pt_img.GetSize()
+            ct_spacing = ct_img.GetSpacing()
+            pt_spacing = pt_img.GetSpacing()
+            if ct_size != pt_size or ct_spacing != pt_spacing:
                 if verbose:
-                    print(f"CT and PET sizes ({ct_img.GetSize()} | {pt_img.GetSize()}) do not match for {base}. Resampling required.")
+                    print(f"CT and PET sizes/spacings ({ct_size} | {pt_size})/({ct_spacing} | {pt_spacing}) do not match for {base}. Resampling required.")
                 resample_ct_to_pet(ct_path, pt_path, verbose=True)
         else:
             print(f"CT and/or PET NIfTI files not found for {base}. Skipping.")

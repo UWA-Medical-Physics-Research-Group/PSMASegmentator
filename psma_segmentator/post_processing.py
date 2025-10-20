@@ -737,7 +737,14 @@ def classify_lesion(
             if verbose:
                 logging.info(f"\t\tCIB z = {cib_z:.2f}, lesion z = {lesion_z:.2f} ({chosen_class})")
         else:
-            raise ValueError("CIB z-slice not found - assuming iliac artery segmentations not provided. Cannot classify nodal lesion.")
+            # Don't raise here; instead warn and assign a placeholder so processing can continue
+            logging.warning(
+                "CIB z-slice not found for case - assuming iliac artery segmentations not provided. "
+                "Cannot determine above/below for nodal lesion; assigning 'nodal_unknown_cib'. Review case files."
+            )
+            chosen_class = "nodal_unknown_cib"
+            if verbose:
+                logging.info(f"\t\tAssigned placeholder class '{chosen_class}' for lesion {pred_label} due to missing CIB")
     else:
         chosen_class = max_overlap_label
         if verbose:
@@ -1079,7 +1086,11 @@ def classify_liver_disease(ct_map,
             weights_only=False
         )
     else:
-        checkpoint = torch.load(model_path, map_location="cpu")
+        checkpoint = torch.load(
+            model_path, 
+            map_location="cpu",
+            weights_only=False
+        )
     model.load_state_dict(checkpoint['model_state_dict'])
     model.eval()
 
@@ -1261,33 +1272,34 @@ def collate_nomogram_info(lesion_results_dict, lesion_results_dir,
                 case_counter += 1
             anonymized_map[case] = anon_name
 
-    # Metrics column names
-    columns = ["Case", "Tumour_SUVmean", "Number_of_lesions", "TTV", "Bone_mets", "Liver_mets"]
+    # Metrics column names (add SUVmax after SUVmean)
+    columns = ["Case", "Tumour_SUVmean", "Tumour_SUVmax", "Number_of_lesions", "TTV", "Bone_mets", "Liver_mets"]
 
     rows = []
     for case in cases:
         case_display = anonymized_map[case] if anonymize else case
         case_data = lesion_results_dict[case]
-        
         suvmean = case_data.get("lesion_metrics", {}).get("patient", {}).get("SUVmean", 0)
+        suvmax = case_data.get("lesion_metrics", {}).get("patient", {}).get("SUVmax", 0)
         # Round to 4 significant figures
         suvmean = float(f"{suvmean:.4g}") if isinstance(suvmean, (int, float)) else suvmean
+        suvmax = float(f"{suvmax:.4g}") if isinstance(suvmax, (int, float)) else suvmax
 
         number_lesions = case_data.get("lesion_metrics", {}).get("region", {}).get("whole_body", {}).get("lesion_count", 0)
-        
+
         ttv = case_data.get("lesion_metrics", {}).get("region", {}).get("whole_body", {}).get("total_burden", 0)
         ttv = float(f"{ttv:.4g}") if isinstance(ttv, (int, float)) else ttv
-        
+
         bone_lesion_count = case_data.get("lesion_metrics", {}).get("region", {}).get("bone", {}).get("lesion_count", 0)
         bone_mets = bool(bone_lesion_count > 0)
-        
+
         liver_mets = bool(case_data.get("lesion_metrics", {}).get("patient", {}).get("liver_mets", 0))
 
-        rows.append([case_display, suvmean, number_lesions, ttv, bone_mets, liver_mets, extract_date_from_case(case)])
+        rows.append([case_display, suvmean, suvmax, number_lesions, ttv, bone_mets, liver_mets, extract_date_from_case(case)])
 
     # Sort by date if present
-    rows.sort(key=lambda x: (x[6] is None, x[6]))  # None dates go last
-    rows = [[case, suvmean, number_lesions, ttv, bone_mets, liver_mets] for case, suvmean, number_lesions, ttv, bone_mets, liver_mets, _ in rows]
+    rows.sort(key=lambda x: (x[7] is None, x[7]))  # None dates go last (date is at index 7)
+    rows = [[case, suvmean, suvmax, number_lesions, ttv, bone_mets, liver_mets] for case, suvmean, suvmax, number_lesions, ttv, bone_mets, liver_mets, _ in rows]
 
     # Save mapping if anonymizing
     if anonymize:
@@ -1299,9 +1311,9 @@ def collate_nomogram_info(lesion_results_dict, lesion_results_dir,
                 writer.writerow([anon, orig])
         if verbose:
             print(f"Anonymization map saved to {map_path}")
-        csv_name = "patient_disease_info_anon.csv"
+        csv_name = "biomarker_info_anon.csv"
     else:
-        csv_name = "patient_disease_info.csv"
+        csv_name = "biomarker_info.csv"
 
     csv_path = os.path.join(lesion_results_dir, csv_name)
     # Write CSV
@@ -1312,7 +1324,7 @@ def collate_nomogram_info(lesion_results_dict, lesion_results_dir,
         writer.writerows(rows)
 
     if verbose:
-        print(f"Nomogram info saved to {csv_path}")
+        print(f"Biomarker info saved to {csv_path}")
 
 
 ## Main post-processing function ##
