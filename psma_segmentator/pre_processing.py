@@ -243,25 +243,28 @@ def find_preprocessed(case_dirs,
 
         rtstruct_found = False
 
+        # Consolidated DICOM discovery for the case directory (robust to various layouts)
         if handling_dicoms and rtstruct_processing:
-            for study_dir in case_dir.iterdir():
-                if study_dir.is_dir():
-                    # print(f"Checking study directory {study_dir}")
-                    dicom_dir, modality = get_dicom_dir_and_type(study_dir)
-                    if dicom_dir:
-                        if modality == 'CT':
-                            # Only store the first found CT DICOM dir as a string
-                            if case_name not in ct_dicom_case_map:
-                                ct_dicom_case_map[case_name] = dicom_dir
-                                # print(f"Mapping case {case_name} to CT DICOM directory {dicom_dir}")
-                        elif modality == 'PT':
-                            continue
-                        elif modality == 'RTSTRUCT':
-                            rtstruct_found = True
-                            print(f"Found RTSTRUCT DICOM directory {dicom_dir} for case {case_name}")
-            if not rtstruct_found:
+            # New get_dicom_dir_and_type returns a dict: modality -> [dir, ...]
+            dicom_map = get_dicom_dir_and_type(case_dir)
+            if dicom_map:
+                # If CT directories were found, take the first one for this case
+                ct_dirs = dicom_map.get('CT', [])
+                if ct_dirs:
+                    if case_name not in ct_dicom_case_map:
+                        ct_dicom_case_map[case_name] = ct_dirs[0]
+                        if verbose:
+                            print(f"Mapped case {case_name} -> CT DICOM dir {shorten_path(ct_dirs[0])}")
+
+                # If any RTSTRUCT directories were found, mark rtstruct_found
+                rt_dirs = dicom_map.get('RTSTRUCT', [])
+                if rt_dirs:
+                    rtstruct_found = True
+                    if verbose:
+                        print(f"Found RTSTRUCT DICOM directory {shorten_path(rt_dirs[0])} for case {case_name}")
+            else:
                 if verbose:
-                    print(f"No RTSTRUCT DICOM directory found for case {case_name}. GT generation will be skipped.")
+                    print(f"No DICOM directories detected for case {case_name}. GT generation will be skipped.")
 
         ct_done, pt_done, gt_done = confirm_already_preprocessed(
             ct_path, 
@@ -750,6 +753,11 @@ def get_modality_dirs_and_validate_pet(study_dir,
     if 'error_log' not in globals():
         error_log = []
 
+    # Get case name for error log
+    # case_name = Path(study_dir).name
+    # case_name is the parent dir of study_dir
+    case_name = Path(study_dir).parent.name
+
     for dicom_dir in study_dir.iterdir():
         if not dicom_dir.is_dir():
             continue
@@ -776,9 +784,6 @@ def get_modality_dirs_and_validate_pet(study_dir,
         tomographic_modalities = {"CT", "PT", "MR"}
         tomo_modalities_found = modalities_present & tomographic_modalities
         non_tomo_modalities = modalities_present - tomographic_modalities
-
-        # Get case name for error log
-        case_name = Path(study_dir).name
 
         if len(tomo_modalities_found) > 1:
             msg = f"Conflicting tomographic modalities in {shorten_path(dicom_dir, 5)}: {tomo_modalities_found}. Skipping entire study."
@@ -848,7 +853,9 @@ def get_modality_dirs_and_validate_pet(study_dir,
             dicom_series[modality] = (dicom_dir, ds)
 
     if not {'CT', 'PT'}.issubset(dicom_series.keys()):
-        print(f"CT and/or PET series not found in {shorten_path(study_dir)}. Skipping entire study.")
+        msg = f"CT and/or PET series not found in {shorten_path(study_dir)}. Skipping entire study."
+        print(msg)
+        error_log.append({'case': case_name, 'reason': msg})
         return None
 
     # Save error log if output_dir is provided and there are errors
@@ -864,28 +871,154 @@ def get_modality_dirs_and_validate_pet(study_dir,
         print(f"[INFO] Error log saved to {error_log_path}")
     return dicom_series
 
-def get_dicom_dir_and_type(study_dir):
-    for dicom_dir in Path(study_dir).iterdir():
-        # print(f"Checking directory for CT: {dicom_dir}")
-        if not dicom_dir.is_dir():
-            continue
-        for file in dicom_dir.iterdir():
-            if not file.is_file():
-                continue
+def get_dicom_dir_and_type(dir):
+    p = Path(dir)
+    dicom_map = defaultdict(list)  # modality -> list of directory paths (strings)
+
+    try:
+        entries = list(p.iterdir())
+    except Exception as e:
+        print(f"[DEBUG] get_dicom_dir_and_type: cannot iterate {dir}: {e}")
+        return {}
+
+    # Helper to append a directory to the map
+    def _add(modality, path):
+        if path is None:
+            return
+        if str(path) not in dicom_map[modality]:
+            dicom_map[modality].append(str(path))
+
+    # 1) Top-level files directly inside the case_dir (flat export)
+    top_files = [f for f in entries if f.is_file()]
+    if top_files:
+        for f in top_files[:10]:
             try:
-                ds = pydicom.dcmread(file, stop_before_pixels=True)
-                if getattr(ds, 'Modality', '').upper() == 'CT':
-                    return str(dicom_dir), 'CT'
-                elif getattr(ds, 'Modality', '').upper() == 'PT':
-                    return str(dicom_dir), 'PT'
-                elif getattr(ds, 'Modality', '').upper() == 'RTSTRUCT':
-                    return str(dicom_dir), 'RTSTRUCT'
-                else:
-                    print(f"Skipping DICOM dir {shorten_path(dicom_dir)}: unsupported modality {getattr(ds, 'Modality', 'N/A')}.")
-                    continue
+                ds = pydicom.dcmread(f, stop_before_pixels=True)
+                modality = getattr(ds, 'Modality', '').upper()
+                if modality in ('CT', 'PT', 'RTSTRUCT'):
+                    _add(modality, p)
             except Exception:
                 continue
-    return None, None
+
+    # 2) Inspect immediate subdirectories (common layout)
+    for sub_dir in entries:
+        if not sub_dir.is_dir():
+            continue
+        try:
+            sub_entries = list(sub_dir.iterdir())
+        except Exception as e:
+            print(f"[DEBUG] Cannot iterate subdir {shorten_path(sub_dir)}: {e}")
+            continue
+
+        # Try a small sample of files first
+        sample_files = [f for f in sub_entries if f.is_file()][:10]
+        found_modality = None
+        for file in sample_files:
+            try:
+                ds = pydicom.dcmread(file, stop_before_pixels=True)
+                modality = getattr(ds, 'Modality', '').upper()
+                if modality in ('CT', 'PT', 'RTSTRUCT'):
+                    _add(modality, sub_dir)
+                    found_modality = modality
+                    # For RTSTRUCT keep scanning to collect others; for CT/PT we can break from sample
+                    if modality in ('CT', 'PT'):
+                        break
+            except Exception:
+                continue
+
+        # If sample didn't find CT/PT, fall back to a full scan of this subdir
+        if found_modality not in ('CT', 'PT'):
+            for file in sub_entries:
+                if not file.is_file():
+                    continue
+                try:
+                    ds = pydicom.dcmread(file, stop_before_pixels=True)
+                    modality = getattr(ds, 'Modality', '').upper()
+                    if modality in ('CT', 'PT', 'RTSTRUCT'):
+                        _add(modality, sub_dir)
+                        # If CT or PT found, we can stop scanning this subdir
+                        if modality in ('CT', 'PT'):
+                            break
+                except Exception:
+                    continue
+
+        # 3) If this subdir itself contains directory(ies) (common layout: case_dir/dicom_dir/CT_dir),
+        # inspect those child directories one level deeper. We keep this shallow (depth=2) to
+        # avoid expensive recursive scans while covering the usual PACS export layouts.
+        try:
+            child_dirs = [d for d in sub_entries if d.is_dir()]
+        except Exception:
+            child_dirs = []
+
+        for child in child_dirs:
+            # If we've already recorded CT/PT for this child (as sub_dir), skip
+            # but still allow RTSTRUCTs to accumulate from multiple places
+            # Sample a few files first
+            try:
+                child_entries = list(child.iterdir())
+            except Exception as e:
+                print(f"[DEBUG] Cannot iterate nested subdir {shorten_path(child)}: {e}")
+                continue
+
+            sample_files_child = [f for f in child_entries if f.is_file()][:10]
+            found_mod_child = None
+            for file in sample_files_child:
+                try:
+                    ds = pydicom.dcmread(file, stop_before_pixels=True)
+                    modality = getattr(ds, 'Modality', '').upper()
+                    if modality in ('CT', 'PT', 'RTSTRUCT'):
+                        _add(modality, child)
+                        found_mod_child = modality
+                        if modality in ('CT', 'PT'):
+                            break
+                except Exception:
+                    continue
+
+            if found_mod_child not in ('CT', 'PT'):
+                for file in child_entries:
+                    if not file.is_file():
+                        continue
+                    try:
+                        ds = pydicom.dcmread(file, stop_before_pixels=True)
+                        modality = getattr(ds, 'Modality', '').upper()
+                        if modality in ('CT', 'PT', 'RTSTRUCT'):
+                            _add(modality, child)
+                            if modality in ('CT', 'PT'):
+                                break
+                    except Exception:
+                        continue
+
+    # Print a summary of what we found for the given case dir
+    if dicom_map:
+        # Re-order modality lists so the directory with the most files is first.
+        for modality, dirs in list(dicom_map.items()):
+            if len(dirs) > 1:
+                counts = []
+                for d in dirs:
+                    try:
+                        dpath = Path(d)
+                        cnt = sum(1 for f in dpath.iterdir() if f.is_file() and not f.name.startswith('.'))
+                    except Exception:
+                        cnt = 0
+                    counts.append((d, cnt))
+                # sort descending by count
+                counts.sort(key=lambda x: x[1], reverse=True)
+                # replace list with sorted dirs
+                dicom_map[modality] = [c[0] for c in counts]
+                # user-visible message indicating choice
+                best_dir, best_count = counts[0]
+                try:
+                    other_dirs = [shorten_path(Path(x)) for x in dicom_map[modality][1:]]
+                except Exception:
+                    other_dirs = []
+                print(f"[DEBUG] Multiple {modality} dirs found for {shorten_path(p)}. Choosing largest ({shorten_path(best_dir)}) with {best_count} files. Other dirs: {other_dirs}")
+
+        summary = {k: [shorten_path(Path(p)) for p in v] for k, v in dicom_map.items()}
+        # print(f"[DEBUG] DICOM mapping for {shorten_path(p)}: {summary}")
+    else:
+        print(f"[DEBUG] No CT/PT/RTSTRUCT found in {shorten_path(p)}")
+
+    return dict(dicom_map)
 
 def get_suv_bw_scale_factor(ds):
     

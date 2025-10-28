@@ -452,6 +452,9 @@ def seg_to_rtstruct(output_pred_dir,
                     overwrite):
     seg_files = [f for f in os.listdir(output_pred_dir) if f.endswith('.nii.gz')]
 
+    # Collect skipped cases and their messages so we can write a CSV report at the end
+    skipped_cases = []  # list of (case_name, message)
+
     for seg_file in seg_files:
         seg_nifti_path = Path(output_pred_dir) / seg_file
         # Extract case_name from seg_file (remove .nii.gz and any suffixes)
@@ -465,9 +468,11 @@ def seg_to_rtstruct(output_pred_dir,
                     break
         # Get CT DICOM path from ct_dicom_case_map
         ct_dicom_dir = ct_dicom_case_map.get(case_name)
-        print(f"CT DICOM dir for case {case_name}: {ct_dicom_dir}")
+        # print(f"CT DICOM dir for case {case_name}: {ct_dicom_dir}")
         if not ct_dicom_dir:
-            print(f"Warning: No CT DICOM path found for case {case_name} at {ct_dicom_dir}. Skipping RTSTRUCT conversion for {seg_file}.")
+            msg = f"No CT DICOM path found for case {case_name} at {ct_dicom_dir}. Skipping RTSTRUCT conversion for {seg_file}."
+            print(f"Warning: {msg}")
+            skipped_cases.append((case_name, msg))
             continue
         # Read first CT DICOM file to extract patient info
         ct_dicom_files = [f for f in os.listdir(ct_dicom_dir)]
@@ -497,7 +502,9 @@ def seg_to_rtstruct(output_pred_dir,
                     try:
                         ds = pydicom.dcmread(dcm_file_path, stop_before_pixels=True)
                         if getattr(ds, 'Modality', None) == 'RTSTRUCT':
-                            print(f"RTSTRUCT already exists for case {case_name} at {shorten_path(dcm_file_path)}. Skipping conversion.")
+                            msg = f"RTSTRUCT already exists for case {case_name} at {shorten_path(dcm_file_path)}. Skipping conversion."
+                            print(msg)
+                            # skipped_cases.append((case_name, msg))
                             continue
                     except Exception as e:
                         print(f"Warning: Could not read DICOM file {dcm_file_path}: {e}")
@@ -505,7 +512,9 @@ def seg_to_rtstruct(output_pred_dir,
                     if verbose:
                         print(f"No DICOM files found in {rtstruct_dir_case}. Proceeding with conversion.")
             else:
-                print(f"Invalid RTSTRUCT path {rtstruct_dir_case}. Skipping conversion.")
+                msg = f"Invalid RTSTRUCT path {rtstruct_dir_case}. Skipping conversion."
+                print(msg)
+                skipped_cases.append((case_name, msg))
                 continue
         else:
             os.makedirs(rtstruct_dir_case, exist_ok=True)
@@ -544,8 +553,27 @@ def seg_to_rtstruct(output_pred_dir,
             if verbose:
                 print(f"Converted {seg_nifti_path} to RTSTRUCT at {rtstruct_dir_case} using CT DICOMs from {ct_dicom_dir}")
         except subprocess.CalledProcessError as e:
-            print(f"ERROR: Plastimatch NIfTI→RTSTRUCT conversion failed for {seg_file}: {e}")
+            msg = f"ERROR: Plastimatch NIfTI→RTSTRUCT conversion failed for {seg_file}: {e}"
+            print(msg)
+            skipped_cases.append((case_name, msg))
             continue
+
+    # After processing all segmentations, write a CSV with skipped cases (if any)
+    try:
+        if skipped_cases:
+            os.makedirs(rtstruct_dir, exist_ok=True)
+            import csv as _csv
+            csv_path = os.path.join(rtstruct_dir, "rtstruct_skipped_cases.csv")
+            with open(csv_path, "w", newline='') as _f:
+                _writer = _csv.writer(_f)
+                _writer.writerow(["case_name", "message"])
+                for case_name, msg in skipped_cases:
+                    _writer.writerow([case_name, msg])
+            if verbose:
+                print(f"Saved RTSTRUCT skip report to {csv_path}")
+    except Exception as e:
+        # Non-fatal: report but don't raise
+        print(f"Warning: Could not write RTSTRUCT skip CSV to {rtstruct_dir}: {e}")
 
 ## Generate organ segmentations using TotalSegmentator ##
 def generate_organ_segmentations(ct_map, organ_dir, 

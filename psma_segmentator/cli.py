@@ -21,6 +21,9 @@ along with this program.  If not, see <https://www.gnu.org/licenses/>.
 import argparse
 import re
 import os
+import sys
+from pathlib import Path
+from datetime import datetime
 
 def main():
     parser = argparse.ArgumentParser(description="PSMA PET/CT Auto-Segmentation Tool.")
@@ -98,19 +101,96 @@ def main():
         "-v", "--verbose", required=False, action="store_true",
         help="Enable verbose output."
     )
+    parser.add_argument(
+        "--save_log",
+        action="store_true",
+        help=("If set, save the entire CLI stdout/stderr to a timestamped .txt file in the "
+                "parent directory of --output_dir (or parent of --input_dir, or cwd if neither)."),
+    )
 
     args = parser.parse_args()
 
+    # Setup optional CLI logging (tee stdout/stderr to a file) early so all messages are captured
+    log_file = None
+    original_stdout = sys.stdout
+    original_stderr = sys.stderr
+    if getattr(args, "save_log", False):
+        # Determine parent directory for the log file
+        if args.output_dir:
+            log_parent = Path(args.output_dir).parent
+        elif args.input_dir:
+            log_parent = Path(args.input_dir).parent
+        else:
+            log_parent = Path.cwd()
+        try:
+            log_parent.mkdir(parents=True, exist_ok=True)
+        except Exception:
+            log_parent = Path.cwd()
+
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        log_path = log_parent / f"psma_segmentator_run_{timestamp}.txt"
+
+        try:
+            log_file = open(log_path, "w", encoding="utf-8")
+        except Exception as e:
+            print(f"[WARNING] Could not open log file {log_path} for writing: {e}")
+            log_file = None
+
+        if log_file is not None:
+            class Tee:
+                def __init__(self, a, b):
+                    self.a = a
+                    self.b = b
+                def write(self, data):
+                    try:
+                        self.a.write(data)
+                    except Exception:
+                        pass
+                    try:
+                        self.b.write(data)
+                    except Exception:
+                        pass
+                def flush(self):
+                    try:
+                        self.a.flush()
+                    except Exception:
+                        pass
+                    try:
+                        self.b.flush()
+                    except Exception:
+                        pass
+
+            sys.stdout = Tee(original_stdout, log_file)
+            sys.stderr = Tee(original_stderr, log_file)
+            print(f"[INFO] CLI output is being saved to: {log_path}")
+
+    # If 'torch' is already imported, warn the user. Changing CUDA_VISIBLE_DEVICES after
+    # torch has initialized may not have any effect. We do NOT force a CPU fallback here;
+    # instead we print a clear warning so the user can restart the process if they need
+    # a different CUDA device configuration.
+    if 'torch' in sys.modules:
+        print(
+            "[WARNING] The 'torch' module is already imported in this Python process.\n"
+            "CUDA may already be initialized in this process. If you requested a specific "
+            "GPU with --device (for example 'cuda:1') and it doesn't appear to be used, "
+            "please restart the process so the requested device can be honoured before "
+            "any import of torch.",
+            file=sys.stderr,
+        )
+
+    # Respect whatever device the user requested. Users expect that passing an absolute
+    # CUDA ordinal such as 'cuda:23' will use the system-wide device with that ordinal.
+    # Do not remap or override CUDA_VISIBLE_DEVICES here.
     if args.device is not None:
         if re.match(r"^cuda:\d+$", args.device):
-            gpu_idx = args.device.split(":")[1]
-            os.environ["CUDA_VISIBLE_DEVICES"] = gpu_idx
-            print(f"Restricted CUDA visibility to GPU {gpu_idx}")
+            # Informational message only; we do not change environment vars or remap.
+            print(f"[INFO] Using requested device '{args.device}'. This uses the system-wide CUDA ordinal.")
 
     # import here so CUDA_VISIBLE_DEVICES is set before any torch import inside psma_segmentator
-    from psma_segmentator.python_api import psma_segmentator
+    try:
+        from psma_segmentator.python_api import psma_segmentator
 
-    psma_segmentator(
+        psma_segmentator(
                 input_dir = args.input_dir, 
                 input_ct = args.input_ct,
                 input_pet = args.input_pet,
@@ -131,6 +211,20 @@ def main():
                 overwrite = args.overwrite,
                 verbose = args.verbose,
             )
-
+    finally:
+        # Restore stdout/stderr and close log file if we opened one
+        if getattr(args, "save_log", False) and log_file is not None:
+            try:
+                sys.stdout = original_stdout
+            except Exception:
+                pass
+            try:
+                sys.stderr = original_stderr
+            except Exception:
+                pass
+            try:
+                log_file.close()
+            except Exception:
+                pass
 if __name__ == "__main__":
     main()
