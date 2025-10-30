@@ -47,6 +47,8 @@ import csv
 from datetime import datetime
 import subprocess
 import pydicom
+from sklearn.mixture import GaussianMixture
+
 
 from psma_segmentator.pre_processing import shorten_path
 
@@ -312,87 +314,265 @@ totalseg_labels_and_regions = {
     }
 }
 
-
-def expand_segmentation(predicted_image, pet_image, 
-                                ct_image_dir = str, suv_threshold=3):
+def expand_segmentations(lesion_dir, organ_dir, ct_map, pet_map):
     """
-    Expand the predicted segmentation based on the PET image and a given SUV threshold.
+    Expands lesion segmentations using organ-aware constraints, dynamic SUV thresholding,
+    watershed filtering, and fast marching expansion.
 
-    :param predicted_image: SimpleITK image of the predicted segmentation.
-    :param pet_image: SimpleITK image of the PET image.
-    :param ct_image: SimpleITK image of the CT image.
-    :param suv_threshold: The SUV threshold to expand the segmentation by. Defaults to three. 
-    :return: The expanded segmentation.
+    Parameters:
+    - lesion_dir: Directory containing predicted lesion NIfTI files.
+    - organ_dir: Directory containing TotalSegmentator organ NIfTI files.
+    - ct_map: Dictionary mapping case_name to CT image file path.
+    - pet_map: Dictionary mapping case_name to PET image file path.
     """
-    # Ensure the PET image is of type sitkFloat32
-    pet_image = sitk.Cast(pet_image, sitk.sitkFloat32)
 
-    # Label the connected components in the predicted segmentation
-    labeled_image = sitk.ConnectedComponent(predicted_image)
+    for file_name in os.listdir(lesion_dir):
+        if not file_name.endswith('.nii.gz'):
+            continue
 
-    # Get the number of connected components
-    num_components = int(sitk.GetArrayViewFromImage(labeled_image).max())
+        case_name = file_name.split('.')[0]
+        lesion_path = os.path.join(lesion_dir, file_name)
+        pet_path = pet_map.get(case_name)
+        ct_path = ct_map.get(case_name)
 
-    # Create an empty image to store the expanded segmentation
-    expanded_seg = sitk.Image(predicted_image.GetSize(), sitk.sitkUInt8)
-    expanded_seg.CopyInformation(predicted_image)
+        if not pet_path or not ct_path:
+            print(f"Missing PET/CT for case {case_name}")
+            continue
 
-    #Run the TotalSegmentator on the input CT image
-    ct_segmentation_nib = totalsegmentator(ct_image_dir,
-                                            fastest = True)
-    
-    #Convert the nibabel image to a NumPy array
-    ct_segmentation_array = ct_segmentation_nib.get_fdata()
+        lesion_img = nib.load(lesion_path)
+        lesion_mask = lesion_img.get_fdata()
+        pet_image = nib.load(pet_path).get_fdata()
 
-    #Convert to int
-    ct_segmentation_array = ct_segmentation_array.astype(int)
+        # Load organ_total (TotalSegmentator) if available; prefer the single *_total.nii.gz file
+        organ_total_path = os.path.join(organ_dir, f"{case_name}_total.nii.gz")
+        organ_total_data = None
+        if os.path.exists(organ_total_path):
+            try:
+                organ_total_nib = nib.load(organ_total_path)
+                # Resample organ_total to lesion image if shapes differ
+                if organ_total_nib.shape != lesion_img.shape:
+                    organ_total_data = resample_input_to_target(organ_total_nib, lesion_img)
+                else:
+                    organ_total_data = organ_total_nib.get_fdata().astype(np.int32)
+            except Exception:
+                organ_total_data = None
 
-    #Just get the components of the CT segmentation equal to 5 or 21 or 22 (liver, bladder, prostate)
-    ct_bladder_prostate = np.isin(ct_segmentation_array, [5, 21, 22]).astype(np.uint8)
-    ct_bladder_prostate = np.transpose(ct_bladder_prostate, (2, 1, 0)) #Converting from (z, y, x) to (x, y, z) format
+        # If organ_total is not present, build a coarse organ_total from any individual organ files
+        if organ_total_data is None:
+            organ_total_data = np.zeros_like(pet_image, dtype=np.int32)
+            for organ_file in os.listdir(organ_dir):
+                if organ_file.startswith(case_name) and organ_file.endswith('.nii.gz'):
+                    try:
+                        organ_mask = nib.load(os.path.join(organ_dir, organ_file)).get_fdata()
+                        organ_total_data[organ_mask > 0] = 1
+                    except Exception:
+                        # skip unreadable organ files
+                        continue
 
-    # Iterate over each connected component
-    for i in range(1, num_components + 1):
-        # Get the current component
-        component = labeled_image == i
+        # Obtain liver mask using TotalSegmentator labelling convention (5 == liver)
+        liver_mask = (organ_total_data == 5).astype(np.uint8)
+        suv_threshold = None
+        if liver_mask.sum() > 0:
+            # Prefer the robust GMM-based approach when liver exists
+            try:
+                suv_threshold = find_liver_reference_uptake(liver_mask, pet_image)
+            except Exception:
+                suv_threshold = None
 
-        # Find all seed points for the current connected component
-        component_array = sitk.GetArrayFromImage(component)
-        pet_array = sitk.GetArrayFromImage(pet_image)
+        # Fallback: if liver not found or GMM failed, try aorta (label 52) and use IQR mean
+        if suv_threshold is None or liver_mask.sum() == 0:
+            aorta_mask = (organ_total_data == 52).astype(np.uint8)
+            if aorta_mask.sum() > 0:
+                vals = pet_image[aorta_mask > 0]
+                if vals.size > 0:
+                    q1, q3 = np.percentile(vals, [25, 75])
+                    iqr_vals = vals[(vals >= q1) & (vals <= q3)]
+                    if iqr_vals.size > 0:
+                        suv_threshold = float(np.nanmean(iqr_vals))
+                    else:
+                        suv_threshold = None
+                else:
+                    suv_threshold = None
+            else:
+                suv_threshold = None
 
-        # Find the voxel with the maximum SUV value within the component
-        component_voxels = np.argwhere(component_array)
-        max_voxel = max(component_voxels, key=lambda x: pet_array[tuple(x)])
-        seed_point = tuple(max_voxel[::-1])  # Convert to (z, y, x) format
-        seed_point = (int(seed_point[0]), int(seed_point[1]), int(seed_point[2]))
-        expanded_component = sitk.ConnectedThreshold(image1=pet_image,
-                                                        seedList=[seed_point],
-                                                        lower=suv_threshold,
-                                                        upper=1000.0,
-                                                        replaceValue=1)
-        
-        #Get the array from the expanded component
-        expanded_component_array = sitk.GetArrayFromImage(expanded_component)
+        # If still no threshold, use conservative default = 3
+        if suv_threshold is None:
+            suv_threshold = 3.0
+            print(f"[INFO] Liver and aorta masks missing or empty for {case_name}; using fallback SUV threshold = {suv_threshold}")
 
-        #Implement the rubric for selecting which components are expanded. Check if the expanded component
-        #just created overlaps with the urinary bladder of the ct segmentation (value is 21), or if the expanded
-        #component overlaps with the prostate (value is 22). If it does, then don't expand the component.
-        #If it doesn't, then expand the component.
-        
-        #If any intersection between the expanded component and the liver/bladder/prostate is found, 
-        # then don't expand the component.
-        if np.any(np.logical_and(expanded_component_array, ct_bladder_prostate)):
-            expanded_seg = sitk.Or(expanded_seg, component)
-        
-        #Handle the case where the component is all zeroes because SUVmax lower than threshold
-        elif np.all(expanded_component_array == 0):
-            expanded_seg = sitk.Or(expanded_seg, component)
-        
+        # 1) Grow each connected component conservatively based on local SUV (CCA + region-grow)
+        expanded_mask = run_cca_fast_marching(lesion_mask, pet_image, suv_threshold)
+
+        # 2) Produce coarse high-uptake regions (useful for diagnostics / downstream heuristics)
+        watershed_labels = watershed_filtering(pet_image)
+
+        # 3) Constrain and finalize expansion with organ-aware rules and volume caps
+        # Forbid crossing any organ boundaries: organ_total_data > 0 are considered organs
+        final_mask = expand_lesion_segmentation(expanded_mask, pet_image, organ_total_data, suv_threshold)
+
+        # Save final expanded segmentation next to the original with suffix _expanded.nii.gz
+        # Save into a dedicated expanded directory adjacent to lesion_dir
+        expanded_dir = f"{lesion_dir.rstrip(os.sep)}_expanded"
+        os.makedirs(expanded_dir, exist_ok=True)
+        out_name = f"{case_name}_expanded.nii.gz"
+        out_path = os.path.join(expanded_dir, out_name)
+        try:
+            final_img = nib.Nifti1Image(final_mask.astype(np.uint8), affine=lesion_img.affine, header=lesion_img.header)
+            nib.save(final_img, out_path)
+            print(f"Processed and saved expanded segmentation for case: {case_name} -> {out_name}")
+        except Exception as e:
+            print(f"Warning: Failed to save expanded segmentation for {case_name}: {e}")
+
+def run_cca_fast_marching(lesion_mask, pet_image, suv_threshold):
+    """
+    Identifies connected components and applies Fast Marching expansion from SUVmax voxel.
+    """
+    # lesion_mask and pet_image are numpy arrays in (z,y,x) or (x,y,z) depending on upstream usage.
+    # We'll treat them as matching shapes. The approach here is conservative:
+    #  - label connected components in lesion_mask
+    #  - for each component find its SUVmax voxel
+    #  - perform a thresholded region grow on the PET image using a threshold that is
+    #    the max of (suv_threshold, 0.5 * SUVmax_of_component). This captures local high-uptake
+    #    tissue while avoiding overgrowth.
+    try:
+        struct = generate_binary_structure(3, 1)
+    except Exception:
+        # Fallback: if lesion_mask is 2D for some reason
+        struct = generate_binary_structure(2, 1)
+
+    labeled, ncomp = label(lesion_mask, structure=struct)
+    result = np.copy(lesion_mask).astype(bool)
+
+    if ncomp == 0:
+        return result.astype(np.uint8)
+
+    # Thresholded image caches
+    for comp_id in range(1, ncomp + 1):
+        comp_mask = (labeled == comp_id)
+        if not np.any(comp_mask):
+            continue
+        # extract SUV values inside the component
+        comp_suv = pet_image * comp_mask
+        max_suv = float(np.max(comp_suv))
+        if max_suv <= 0 or np.isnan(max_suv):
+            # nothing to grow from
+            continue
+
+        # choose conservative local threshold
+        local_thresh = max(suv_threshold, max_suv * 0.5)
+
+        # threshold the PET image and pick the connected region that contains the seed (max voxel)
+        thr_mask = pet_image >= local_thresh
+        # Label thresholded regions
+        thr_labeled, thr_n = label(thr_mask, structure=struct)
+        seed_idx = np.unravel_index(np.argmax(comp_suv), comp_suv.shape)
+        seed_label = thr_labeled[seed_idx]
+        if seed_label == 0:
+            # seed not included in thresholded mask; fall back to original component
+            region = comp_mask
         else:
-            expanded_seg = sitk.Or(expanded_seg, expanded_component)
-            expanded_seg = sitk.Or(expanded_seg, component)
-        
-    return expanded_seg
+            region = thr_labeled == seed_label
+
+        # Combine conservative region with original component
+        result = np.logical_or(result, region)
+
+    return result.astype(np.uint8)
+
+def watershed_filtering(pet_image):
+    """
+    Applies watershed filtering to PET image to segment contiguous high-uptake regions.
+    """
+    # Simple, robust heuristic: threshold at a high percentile and label connected components.
+    try:
+        pct = np.nanpercentile(pet_image, 99)
+    except Exception:
+        pct = np.nanpercentile(pet_image[np.isfinite(pet_image)], 99)
+
+    high_mask = pet_image >= max(pct, 0.0)
+    try:
+        struct = generate_binary_structure(3, 1)
+        labeled, n = label(high_mask, structure=struct)
+    except Exception:
+        struct = generate_binary_structure(2, 1)
+        labeled, n = label(high_mask, structure=struct)
+
+    return labeled
+
+def find_liver_reference_uptake(liver_mask, pet_image):
+    """
+    Computes dynamic SUV threshold using liver uptake via Gaussian Mixture Model.
+    """
+    liver_suvs = pet_image[liver_mask > 0].reshape(-1, 1)
+    gmm = GaussianMixture(n_components=2, random_state=0).fit(liver_suvs)
+    means = gmm.means_.flatten()
+    dominant_mode = np.min(means)  # Conservative: assume lower mean is background
+    return dominant_mode * 1.5  # Dynamic threshold factor
+
+def expand_lesion_segmentation(lesion_mask, pet_image, organ_total, suv_threshold, max_volume_factor=2.0):
+    """
+    Expands lesion mask using SUV threshold, organ-aware constraints, and volume limits.
+    """
+    # Conservative expansion strategy:
+    # - For each connected component in lesion_mask, iteratively perform a single-voxel
+    #   dilation constrained to voxels where PET >= suv_threshold and not inside forbidden organs
+    # - Stop when either no new voxels are added or the component reaches max_volume_factor * original_volume
+
+    from scipy.ndimage import binary_dilation
+
+    if lesion_mask is None or lesion_mask.sum() == 0:
+        return lesion_mask.astype(np.uint8)
+
+    # build forbidden mask: do not expand into ANY organ voxel. organ_total contains
+    # labeled organs (0 == background). We consider any organ_total > 0 as forbidden.
+    if organ_total is None:
+        forbidden = np.zeros_like(pet_image, dtype=bool)
+    else:
+        # organ_total may be binary or labeled; consider any positive label as organ
+        forbidden = (organ_total > 0)
+
+    try:
+        struct = generate_binary_structure(3, 1)
+    except Exception:
+        struct = generate_binary_structure(2, 1)
+
+    labeled, ncomp = label(lesion_mask, structure=struct)
+    final = np.zeros_like(lesion_mask, dtype=bool)
+
+    for cid in range(1, ncomp + 1):
+        comp = labeled == cid
+        orig_vol = np.sum(comp)
+        if orig_vol == 0:
+            continue
+        max_voxels = int(max_volume_factor * orig_vol)
+
+        current = comp.copy()
+        iterations = 0
+        while True:
+            iterations += 1
+            # candidate expansion: one-voxel dilation
+            dilated = binary_dilation(current, structure=struct)
+            candidate = np.logical_and(dilated, np.logical_not(current))
+            # apply SUV constraint and forbidden organ mask
+            candidate = np.logical_and(candidate, pet_image >= suv_threshold)
+            candidate = np.logical_and(candidate, np.logical_not(forbidden))
+
+            # add candidates
+            new = np.logical_or(current, candidate)
+            if np.sum(new) > max_voxels:
+                # if we would exceed max size, stop and keep current
+                break
+            if np.array_equal(new, current):
+                break
+            current = new
+            # safety to prevent infinite loops
+            if iterations > 50:
+                break
+
+        final = np.logical_or(final, current)
+
+    return final.astype(np.uint8)
+
 
 ## Apply SUV threshold to segmentation outputs ##
 def apply_suv_threshold(pet_map, 

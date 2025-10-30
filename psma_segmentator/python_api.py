@@ -174,6 +174,7 @@ def psma_segmentator(input_dir: str = None,
                         input_pet: str = None,
                         output_pred_dir: str = None, 
                         weights_dir: str = None,
+                        checkpoint_name: str = "checkpoint_final.pth",
                         token: str = None,
                         version: str = None,
                         device: str = "cuda" if torch.cuda.is_available() else "cpu",
@@ -305,8 +306,10 @@ This is free software, and you are welcome to redistribute it under certain cond
         output_pred_dir=output_pred_dir,
         device=device,
         use_tta=not fast,  # Use TTA unless fast mode is specified 
-        verbose=verbose
+        verbose=verbose,
+        checkpoint_name=checkpoint_name,
     )
+    
 
     if disable_postprocessing:
         print("\nSkipping post-processing. Segmentation results are in: "
@@ -331,7 +334,7 @@ This is free software, and you are welcome to redistribute it under certain cond
             anonymize=anonymize,
         )
 
-    print("\nPSMA segmentation pipeline complete.")
+    print("\nPSMA segmentation pipeline complete. END OF LINE.")
     return
 
 def show_warr_text():

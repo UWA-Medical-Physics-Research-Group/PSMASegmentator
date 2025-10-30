@@ -32,13 +32,14 @@ import math
 from nnunetv2.inference.predict_from_raw_data import nnUNetPredictor
 
 
-def segmentate(model_folder, 
-                list_of_lists_pred, 
-                output_pred_dir, 
-                device, 
+def segmentate(model_folder,
+                list_of_lists_pred,
+                output_pred_dir,
+                device,
                 use_tta,
-                verbose, 
-                step_size=0.5):
+                verbose,
+                step_size=0.5,
+                checkpoint_name: str = "checkpoint_final.pth"):
     """
     Runs inference using nnUNet for all cases in the preprocessed directory.
     """    
@@ -60,12 +61,22 @@ def segmentate(model_folder,
         verbose=verbose,
         allow_tqdm=True
     )
-    predictor.initialize_from_trained_model_folder(model_folder, use_folds=None, checkpoint_name="checkpoint_final.pth")
+    # Initialize predictor from the requested checkpoint. Pass checkpoint_name to allow
+    # choosing 'checkpoint_final.pth' (default) or 'checkpoint_best.pth' (or other name).
+    predictor.initialize_from_trained_model_folder(model_folder, use_folds=None, checkpoint_name=checkpoint_name)
 
     # Run nnUNet inference on the entire preprocessed directory
     print(f"\nRunning prediction on {list_of_lists_pred}...")
     if list_of_lists_pred is not None:
         print(f"Saving predictions to output directory: {output_pred_dir}")
+    print("Inference parameters: ")
+    print(f" - Model folder: {model_folder}")
+    print(f" - Checkpoint name: {checkpoint_name}")
+    print(f" - Device: {device}")
+    print(f" - Use TTA: {use_tta}")
+    print(f" - Tile step size: {step_size}")
+
+    # Run prediction
     predictor.predict_from_files(
         list_of_lists_or_source_folder=list_of_lists_pred,
         output_folder_or_list_of_truncated_output_files=output_pred_dir,

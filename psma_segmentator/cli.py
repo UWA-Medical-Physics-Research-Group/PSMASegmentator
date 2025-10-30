@@ -26,6 +26,8 @@ from pathlib import Path
 from datetime import datetime
 
 def main():
+    print("GREETINGS, PROGRAM. Welcome to the Digital Frontier of PSMA PET/CT Segmentation...\n")
+
     parser = argparse.ArgumentParser(description="PSMA PET/CT Auto-Segmentation Tool.")
     
     parser.add_argument(
@@ -47,6 +49,10 @@ def main():
     parser.add_argument(
         "-w", "--weights_dir", required=False, default=None,
         help="Directory to look for existing model weights or to store downloaded model weights. Defaults to ~/.psmasegmentator/[version]."
+    )
+    parser.add_argument(
+        "-chkpt", "--checkpoint_name", required=False, type=str, default="checkpoint_final.pth",
+        help="Name of the checkpoint file to use for inference."
     )
     parser.add_argument(
         "-pat", "--personal_access_token", required = True, 
@@ -102,8 +108,7 @@ def main():
         help="Enable verbose output."
     )
     parser.add_argument(
-        "--save_log",
-        action="store_true",
+        "--save_log", required=False, action="store_true",
         help=("If set, save the entire CLI stdout/stderr to a timestamped .txt file in the "
                 "parent directory of --output_dir (or parent of --input_dir, or cwd if neither)."),
     )
@@ -196,6 +201,7 @@ def main():
                 input_pet = args.input_pet,
                 output_pred_dir = args.output_dir,
                 weights_dir = args.weights_dir,
+                checkpoint_name = args.checkpoint_name,
                 token = args.personal_access_token,
                 version= args.version,
                 device = args.device,

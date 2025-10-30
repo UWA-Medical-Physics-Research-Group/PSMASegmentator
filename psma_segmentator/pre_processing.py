@@ -703,7 +703,8 @@ def handle_flattened_niftis(nii_files,
     print(f"Existing NIfTI files found. Collating and using these directly for inference.")
 
     for f in tqdm(nii_files, desc="Processing flattened NIfTI files"):
-        print(f"Processing {shorten_path(f)}")
+        if verbose:
+            print(f"Processing {shorten_path(f)}")
         base = f.stem.rsplit('_000', 1)[0]
         nii_path = Path(output_prepro_dir) / f"{base}.nii.gz"
 
