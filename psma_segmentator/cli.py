@@ -122,9 +122,12 @@ def main():
     if getattr(args, "save_log", False):
         # Determine parent directory for the log file
         if args.output_dir:
+            # Place log next to the output directory (parent of output_dir)
             log_parent = Path(args.output_dir).parent
         elif args.input_dir:
-            log_parent = Path(args.input_dir).parent
+            # Save logs in a dedicated subdirectory named '<input_dir_name>_logs'
+            input_path = Path(args.input_dir)
+            log_parent = input_path.parent / f"{input_path.name}_logs"
         else:
             log_parent = Path.cwd()
         try:

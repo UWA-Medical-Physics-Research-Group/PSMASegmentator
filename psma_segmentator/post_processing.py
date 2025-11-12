@@ -763,6 +763,10 @@ def generate_organ_segmentations(ct_map, organ_dir,
 
     # Use ct_map for robust case naming
     # Best practice: save organ segmentations in a dedicated organ_dir, not alongside CT, for clarity and separation of outputs
+    import time
+    total_time_all_cases = 0.0
+    n_cases_run = 0
+
     for case_base, ct_path in ct_map.items():
         out_path_total = os.path.join(organ_dir, f"{case_base}_total.nii.gz")
         if os.path.exists(out_path_total):
@@ -794,7 +798,22 @@ def generate_organ_segmentations(ct_map, organ_dir,
         if fast:
             command += " --fast"
             print("Running TotalSegmentator in 'fast' mode.")
-        os.system(command)
+
+        # Measure wall-clock time for TotalSegmentator invocation (only)
+        t0 = time.perf_counter()
+        ret = os.system(command)
+        t1 = time.perf_counter()
+        elapsed = t1 - t0
+        total_time_all_cases += elapsed
+        n_cases_run += 1
+
+        if ret != 0:
+            print(f"Warning: TotalSegmentator returned non-zero exit code {ret} for case {case_base}")
+        print(f"TotalSegmentator time for {case_base}: {elapsed:.3f} s")
+
+    # Summary timing for all TotalSegmentator runs
+    if n_cases_run > 0:
+        print(f"Total TotalSegmentator time: {total_time_all_cases:.3f} s for {n_cases_run} cases (avg {total_time_all_cases/n_cases_run:.3f} s/case)")
 
 ## Helper functions ##
 def round_sig(x, sig=6):

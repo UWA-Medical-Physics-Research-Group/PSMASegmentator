@@ -30,6 +30,7 @@ import pydicom
 from datetime import datetime
 import math
 from nnunetv2.inference.predict_from_raw_data import nnUNetPredictor
+import time
 
 
 def segmentate(model_folder,
@@ -77,9 +78,13 @@ def segmentate(model_folder,
     print(f" - Tile step size: {step_size}")
 
     # Run prediction
+    t0 = time.perf_counter()
     predictor.predict_from_files(
         list_of_lists_or_source_folder=list_of_lists_pred,
         output_folder_or_list_of_truncated_output_files=output_pred_dir,
         save_probabilities=False,
         overwrite=True
     )
+    t1 = time.perf_counter()
+    total_inference_time_s = t1 - t0
+    print(f"Total inference time: {total_inference_time_s:.3f} s")

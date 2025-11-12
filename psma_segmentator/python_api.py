@@ -251,29 +251,48 @@ This is free software, and you are welcome to redistribute it under certain cond
         "Authorization": f"Bearer {token}",
         "User-Agent": "PSMASegmentator"
     }
-    try:
-        version, release_data = get_version_data(
-                            repo="UWA-Medical-Physics-Research-Group/PSMASegmentator",
-                            version=version, # if None, fetch latest, else fetch specified version
-                            headers=headers)
-        print(f"\nUsing PSMASegmentator version: {version}")
-    except Exception as e:
-        print(f"\nERROR: Could not fetch latest release from GitHub. "
-            f"Check internet connection or repo access.\nError: {e}")
-        raise SystemExit(1)  # hard exit
 
-    if weights_dir is None:
-        weights_dir = get_psmasegmentator_dir(version)
-        print(f"\nUsing default weights directory: {weights_dir}")
-    else: # If weights_dir is missing version subdir, add it
-        if not weights_dir.endswith(version):
-            weights_dir = os.path.join(weights_dir, version)
-        print(f"\nUsing specified weights directory: {weights_dir}")
+    # If the user provided a weights_dir and it already contains downloaded
+    # model weights, use it as-is and skip fetching the release from GitHub.
+    use_provided_weights_without_fetch = False
+    if weights_dir is not None:
+        provided_path = Path(weights_dir)
+        if provided_path.exists():
+            # look for any model weight files (.pth) under the provided directory
+            found_pths = list(provided_path.rglob(f"*{checkpoint_name}"))
+            if len(found_pths) > 0:
+                use_provided_weights_without_fetch = True
+                # normalize to resolved string
+                weights_dir = str(provided_path.resolve())
+                print(f"Using provided weights directory with existing weights: {weights_dir}")
 
-    setup_psma_segmentator(weights_dir)
+    if not use_provided_weights_without_fetch:
+        try:
+            version, release_data = get_version_data(
+                                repo="UWA-Medical-Physics-Research-Group/PSMASegmentator",
+                                version=version, # if None, fetch latest, else fetch specified version
+                                headers=headers)
+            print(f"\nUsing PSMASegmentator version: {version}")
+        except Exception as e:
+            print(f"\nERROR: Could not fetch latest release from GitHub. "
+                f"Check internet connection or repo access.\nError: {e}")
+            raise SystemExit(1)  # hard exit
 
-    # Download all required model assets (main weights and liver classifier)
-    download_model_weights_via_api(weights_dir, headers, release_data)
+        if weights_dir is None:
+            weights_dir = get_psmasegmentator_dir(version)
+            print(f"\nUsing default weights directory: {weights_dir}")
+        else: # If weights_dir is missing version subdir, add it
+            if not weights_dir.endswith(version):
+                weights_dir = os.path.join(weights_dir, version)
+            print(f"\nUsing specified weights directory: {weights_dir}")
+
+        setup_psma_segmentator(weights_dir)
+
+        # Download all required model assets (main weights and liver classifier)
+        download_model_weights_via_api(weights_dir, headers, release_data)
+    else:
+        # Use the provided directory and set environment variables accordingly
+        setup_psma_segmentator(weights_dir)
     # Dynamically detect the liver classifier model file in weights_dir
     liver_model_path = None
     for f in Path(weights_dir).glob("*liver_classifier*.pth"):
