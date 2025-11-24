@@ -1578,18 +1578,21 @@ def post_process(
         # Robustly remove .nii.gz or .nii and _0000 suffix
         name = ct_path.name
         if name.endswith('.nii.gz'):
-            base = name[:-7]  # remove .nii.gz
+            ct_base = name[:-7]  # remove .nii.gz
         elif name.endswith('.nii'):
-            base = name[:-4]  # remove .nii
+            ct_base = name[:-4]  # remove .nii
         else:
             raise ValueError(f"Unexpected CT file format: {ct_path.name}")
-        # Remove _0000 if present
-        if base.endswith('_0000'):
-            base = base[:-5]
-        case_base = base
+        if '_0000' in ct_base:
+            ct_base = ct_base.rsplit('_0000', 1)[0]
+        elif 'CT' in ct_base:
+            ct_base = ct_base.rsplit('CT', 1)[0]
+        print(f"CT base: {ct_base}")
+
+        case_base = ct_base
         ct_map[case_base] = str(ct_path)
         pet_map[case_base] = str(pt_path)
-        # print(f"Mapped case {case_base}: CT={shorten_path(ct_path)}, PET={shorten_path(pt_path)}")
+        print(f"Mapped case {case_base}: CT={ct_path}, PET={pt_path}")
 
     # Derive output_base from output_pred_dir (used for all output dirs/files)
     output_base = Path(output_pred_dir).name.replace('_outputs', '')

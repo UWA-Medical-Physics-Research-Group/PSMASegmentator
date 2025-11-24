@@ -101,10 +101,17 @@ def validate_inputs_dirs(input_dir, input_ct, input_pet):
             raise FileNotFoundError(f"Input CT path {input_ct} does not exist.")
         if not os.path.exists(input_pet):
             raise FileNotFoundError(f"Input PET path {input_pet} does not exist.")
-        if Path(input_ct).stem.endswith('_0000.nii'): # nii.gz ext
-            ct_base = Path(input_ct).stem.replace('_0000.nii', '')
-        elif Path(input_ct).stem.endswith('_0000'): # .nii ext
-            ct_base = Path(input_ct).stem.replace('_0000', '')
+        ct_stem = Path(input_ct).stem
+        if '_0000' in ct_stem:
+            if ct_stem.endswith('.nii'): # nii.gz ext
+                ct_base = ct_stem.replace('_0000.nii', '')
+            else: # .nii ext
+                ct_base = ct_stem.replace('_0000', '')
+        else:
+            if ct_stem.endswith('.nii'): # nii.gz ext
+                ct_base = ct_stem.replace('.nii', '')
+            else: # .nii ext
+                ct_base = ct_stem
         output_pred_dir = str(f"{Path(input_ct).parent}_{ct_base}_outputs")
         output_prepro_dir = str(f"{Path(input_ct).parent}_{ct_base}_preprocessed") # make `None`?
     else:

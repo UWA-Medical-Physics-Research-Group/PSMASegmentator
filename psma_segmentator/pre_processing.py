@@ -190,9 +190,22 @@ def pre_process(input_path,
     elif handling_direct_niftis:
         ct_path = Path(input_ct)
         pt_path = Path(input_pet)
-        base = ct_path.stem.rsplit('_000', 1)[0] if '_000' in ct_path.stem else ct_path.stem
-        ct_img = sitk.ReadImage(str(ct_path))
-        pt_img = sitk.ReadImage(str(pt_path))
+        try:
+            ct_img = sitk.ReadImage(str(ct_path))
+            pt_img = sitk.ReadImage(str(pt_path))
+        except Exception as e:
+            raise ValueError(f"Error reading NIfTI files: {e}")
+
+        ct_stem = ct_path.stem
+        pt_stem = pt_path.stem
+        print(f"Input CT stem: {ct_stem}; PET stem: {pt_stem}")
+        if '_0000' in ct_stem and '_0001' in pt_stem:
+            ct_base = ct_stem.rsplit('_0000', 1)[0]
+            pt_base = pt_stem.rsplit('_0001', 1)[0]
+        elif 'CT' in ct_stem and 'PT' in pt_stem:
+            ct_base = ct_stem.rsplit('CT', 1)[0]
+            pt_base = pt_stem.rsplit('PT', 1)[0]
+        print(f"CT base: {ct_base}; PET base: {pt_base}")
 
         # Acquire sizes and spacings
         ct_size = ct_img.GetSize()
@@ -206,9 +219,10 @@ def pre_process(input_path,
         # Always include in preprocessed list
         list_of_lists_prepro = [[str(ct_path), str(pt_path)]]
         # Only include in pred list if prediction does not exist or overwrite is True
-        pred_file = Path(output_pred_dir) / f"{base}.nii.gz"
+        pred_file = Path(output_pred_dir) / f"{ct_base}.nii.gz"
+        print(f"Prediction file path: {pred_file}")
         if pred_file.exists() and not overwrite:
-            print(f"Skipping {base}: prediction exists at {shorten_path(pred_file)}.")
+            print(f"Skipping {ct_base}: prediction exists at {shorten_path(pred_file)}.")
             list_of_lists_pred = []
         else:
             list_of_lists_pred = [[str(ct_path), str(pt_path)]]
