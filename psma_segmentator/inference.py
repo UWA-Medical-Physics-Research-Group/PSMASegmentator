@@ -40,10 +40,31 @@ def segmentate(model_folder,
                 use_tta,
                 verbose,
                 step_size=0.5,
-                checkpoint_name: str = "checkpoint_final.pth"):
+                checkpoint_name: str = "checkpoint_final.pth",
+                plans_name: str = "plans.json",
+                ):
     """
     Runs inference using nnUNet for all cases in the preprocessed directory.
-    """    
+    """  
+
+    vars_to_check = [
+        "PYTORCH_ALLOC_CONF",
+        "NNUNET_NUM_PREPROCESSING_WORKERS",
+        "NNUNET_NUM_NIFTI_SAVE_WORKERS",
+        "NNUNET_NO_GPU_PREPROCESSING",
+        "NNUNET_FORCE_CPU_STITCHING",
+        "NNUNET_PERFORM_EVERYTHING_ON_DEVICE",
+    ]
+
+    print("\n=== Environment Variable Check ===")
+    for var in vars_to_check:
+        value = os.environ.get(var)
+        if value is None or value == "":
+            print(f"{var}: NOT SET")
+        else:
+            print(f"{var}: {value}")
+    print("=================================\n")
+
     if device == 'cpu':
         torch.set_num_threads(multiprocessing.cpu_count())
         perform_everything_on_device = False
@@ -64,7 +85,10 @@ def segmentate(model_folder,
     )
     # Initialize predictor from the requested checkpoint. Pass checkpoint_name to allow
     # choosing 'checkpoint_final.pth' (default) or 'checkpoint_best.pth' (or other name).
-    predictor.initialize_from_trained_model_folder(model_folder, use_folds=None, checkpoint_name=checkpoint_name)
+    predictor.initialize_from_trained_model_folder(model_folder, 
+                                                    use_folds=None, 
+                                                    checkpoint_name=checkpoint_name, 
+                                                    plans_name=plans_name)
 
     # Run nnUNet inference on the entire preprocessed directory
     print(f"\nRunning prediction on {list_of_lists_pred}...")

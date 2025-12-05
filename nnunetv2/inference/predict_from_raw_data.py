@@ -64,7 +64,8 @@ class nnUNetPredictor(object):
 
     def initialize_from_trained_model_folder(self, model_training_output_dir: str,
                                              use_folds: Union[Tuple[Union[int, str]], None],
-                                             checkpoint_name: str = 'checkpoint_final.pth'):
+                                             checkpoint_name: str = 'checkpoint_final.pth',
+                                             plans_name: str = 'plans.json'):
         """
         This is used when making predictions with a trained model
         """
@@ -72,7 +73,7 @@ class nnUNetPredictor(object):
             use_folds = nnUNetPredictor.auto_detect_available_folds(model_training_output_dir, checkpoint_name)
 
         dataset_json = load_json(join(model_training_output_dir, 'dataset.json'))
-        plans = load_json(join(model_training_output_dir, 'plans.json'))
+        plans = load_json(join(model_training_output_dir, plans_name))
         plans_manager = PlansManager(plans)
 
         if isinstance(use_folds, str):

@@ -55,6 +55,10 @@ def main():
         help="Name of the checkpoint file to use for inference."
     )
     parser.add_argument(
+        "-plans", "--plans_name", required=False, type=str, default="plans.json",
+        help="Name of the plans file to use for inference."
+    )
+    parser.add_argument(
         "-pat", "--personal_access_token", required = True, 
         help= "GitHub Personal Access Token (PAT) for downloading weights."
     )
