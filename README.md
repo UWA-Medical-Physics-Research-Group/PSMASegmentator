@@ -136,12 +136,9 @@ Both approaches result in a Docker image named `psma-segmentator:latest`.
 
 ### 1. Prerequisites
 
-* **Docker** installed (version 20.10+ recommended)
-  [https://docs.docker.com/get-docker/](https://docs.docker.com/get-docker/)
+* [Docker installed](https://docs.docker.com/get-docker/) (version 20.10+ recommended)
 
-* **NVIDIA GPU drivers + NVIDIA Container Toolkit**
-  Required for GPU support:
-  [https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html)
+* [NVIDIA GPU drivers + NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html) (required for GPU support)
 
 * **System requirements**
 
@@ -161,14 +158,14 @@ Both approaches result in a Docker image named `psma-segmentator:latest`.
 If you received a Docker image file such as:
 
 ```
-psma-segmentator_20251211.tar.gz
+psma-segmentator_<yyyymmdd>.tar.gz
 ```
 
 #### Load the image into Docker
 
 ```bash
 cd /path/to/image
-docker load -i psma-segmentator_20251211.tar.gz
+docker load -i psma-segmentator_<yyyymmdd>.tar.gz
 ```
 
 Verify the image is now available:
