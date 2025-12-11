@@ -42,8 +42,9 @@ sudo apt install plastimatch
 ```
 
 ---
+---
 
-## Usage
+## Usage - CLI
 
 Once installed, you can run segmentations using the command-line interface (CLI):
 
@@ -112,6 +113,165 @@ python -m psma_segmentator.cli -i INPUT_DIR -pat YOUR_TOKEN [options]
     Enable detailed logging and progress messages.
 
 
+Here is a **clean, complete, corrected, and expanded** README section covering:
+
+1. **Using a provided `.tar.gz` Docker image**, and
+2. **Building the Docker image yourself** (for developers).
+
+Everything is in clean Markdown, ready to paste into your repo.
+
+---
+
+## Usage – Docker
+
+This section explains how to use the PSMA Segmentator via Docker.
+You may either:
+
+1. **Load a pre-built Docker image** provided as a `.tar.gz` file, or
+2. **Build the image yourself** directly from the repository.
+
+Both approaches result in a Docker image named `psma-segmentator:latest`.
+
+---
+
+### 1. Prerequisites
+
+* **Docker** installed (version 20.10+ recommended)
+  [https://docs.docker.com/get-docker/](https://docs.docker.com/get-docker/)
+
+* **NVIDIA GPU drivers + NVIDIA Container Toolkit**
+  Required for GPU support:
+  [https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html)
+
+* **System requirements**
+
+  * **Shared memory (`--shm-size`)**:
+    32 GB recommended for large whole-body PET/CT images
+    (this uses system RAM, not GPU VRAM)
+
+  * **GPU VRAM**:
+    At least 12–24 GB recommended depending on patch size
+
+  * Sufficient disk space for input, output, and the Docker image
+
+---
+
+### 2. Using a Pre-Built Docker Image (`.tar.gz`)
+
+If you received a Docker image file such as:
+
+```
+psma-segmentator_20251211.tar.gz
+```
+
+#### Load the image into Docker
+
+```bash
+cd /path/to/image
+docker load -i psma-segmentator_20251211.tar.gz
+```
+
+Verify the image is now available:
+
+```bash
+docker images
+```
+
+Expected output:
+
+```
+REPOSITORY             TAG       IMAGE ID       SIZE
+psma-segmentator       latest    <image_id>     <size>
+```
+
+---
+
+### 3. Building the Docker Image Yourself
+
+If you prefer to build the image locally from the repository:
+
+```bash
+cd /path/to/psma-segmentator
+DOCKER_BUILDKIT=1 docker build -t psma-segmentator:latest .
+```
+
+---
+
+### 4. Prepare Input and Weight Directories
+
+#### Input directory example
+
+```
+/home/<user>/data/
+```
+
+Contains:
+
+```
+CT_0000.nii.gz
+PT_0001.nii.gz
+```
+
+#### Create weights directory (required for permissions)
+
+```bash
+mkdir -p /home/<user>/.psmasegmentator
+```
+
+---
+
+### 5. Running PSMA Segmentator via Docker
+
+Below is the recommended full command:
+
+```bash
+docker run --rm --gpus all \
+    --user $(id -u):$(id -g) \
+    --shm-size=32g \
+    -v /home/<user>/data:/data \
+    -v /home/<user>/.psmasegmentator:/weights \
+    psma-segmentator:latest \
+    -plans 'plans_reduced_patch.json' \
+    -i_ct /data/CT_0000.nii.gz \
+    -i_pet /data/PT_0001.nii.gz \
+    -o /data/psmasegmentator_outputs \
+    -pat <PAT> \
+    -w /weights/1.0.0
+```
+
+---
+
+#### Explanation of Key Options
+
+#### Docker runtime options
+
+| Option                     | Meaning                                    |
+| -------------------------- | ------------------------------------------ |
+| `--rm`                     | Remove container after completion          |
+| `--gpus all`               | Use all available GPUs                     |
+| `--user $(id -u):$(id -g)` | Ensures output files are not owned by root |
+| `--shm-size=32g`           | Required for handling large 3D arrays      |
+| `-v <host>:<container>`    | Mount directories into the container       |
+
+#### Container arguments
+
+| Argument | Purpose                               |
+| -------- | ------------------------------------- |
+| `-plans` | Network plan JSON file                |
+| `-i_ct`  | CT input image                        |
+| `-i_pet` | PET input image                       |
+| `-o`     | Output directory                      |
+| `-pat`   | GitHub Personal Access Token          |
+| `-w`     | Model weights folder inside container |
+
+#### Optional flags
+
+* `--fast`
+* `-f`
+
+These enable faster inference and additional post-processing but are **not required** for normal operation.
+
+---
 ---
 
 ## Expected Input Structure
@@ -178,11 +338,13 @@ If CT and PET images differ in shape, the CT will be automatically resampled to 
 If `--rtstruct_processing` is enabled and an RTSTRUCT series is present alongside the CT and PET series' within each study folder, the RTSTRUCT `.dcm` file will be converted - using Plastimatch - into individual NIfTI masks, with optional renaming applied. Additionally, output NIfTI masks will be converted into an RTSTRUCT series and saved in a dedicated '_rtstructs' directory alongside the output directory.
 
 ---
+---
 
 ## Inference and Output Segmentations
 
 An `nnUNetPredictor` is used for inference with the downloaded model weights, with the output predictions being saved to the specified (or default) `output_dir`. 
 
+---
 ---
 
 ## Post-processing

@@ -209,6 +209,7 @@ def main():
                 output_pred_dir = args.output_dir,
                 weights_dir = args.weights_dir,
                 checkpoint_name = args.checkpoint_name,
+                plans_name= args.plans_name,
                 token = args.personal_access_token,
                 version= args.version,
                 device = args.device,
