@@ -47,23 +47,22 @@ def segmentate(model_folder,
     Runs inference using nnUNet for all cases in the preprocessed directory.
     """  
 
-    vars_to_check = [
-        "PYTORCH_ALLOC_CONF",
-        "NNUNET_NUM_PREPROCESSING_WORKERS",
-        "NNUNET_NUM_NIFTI_SAVE_WORKERS",
-        "NNUNET_NO_GPU_PREPROCESSING",
-        "NNUNET_FORCE_CPU_STITCHING",
-        "NNUNET_PERFORM_EVERYTHING_ON_DEVICE",
-    ]
-
-    print("\n=== Environment Variable Check ===")
-    for var in vars_to_check:
-        value = os.environ.get(var)
-        if value is None or value == "":
-            print(f"{var}: NOT SET")
-        else:
-            print(f"{var}: {value}")
-    print("=================================\n")
+    # vars_to_check = [
+    #     "PYTORCH_ALLOC_CONF",
+    #     "NNUNET_NUM_PREPROCESSING_WORKERS",
+    #     "NNUNET_NUM_NIFTI_SAVE_WORKERS",
+    #     "NNUNET_NO_GPU_PREPROCESSING",
+    #     "NNUNET_FORCE_CPU_STITCHING",
+    #     "NNUNET_PERFORM_EVERYTHING_ON_DEVICE",
+    # ]
+    # print("\n=== Environment Variable Check ===")
+    # for var in vars_to_check:
+    #     value = os.environ.get(var)
+    #     if value is None or value == "":
+    #         print(f"{var}: NOT SET")
+    #     else:
+    #         print(f"{var}: {value}")
+    # print("=================================\n")
 
     if device == 'cpu':
         torch.set_num_threads(multiprocessing.cpu_count())
@@ -97,6 +96,7 @@ def segmentate(model_folder,
     print("Inference parameters: ")
     print(f" - Model folder: {model_folder}")
     print(f" - Checkpoint name: {checkpoint_name}")
+    print(f" - Plans name: {plans_name}")
     print(f" - Device: {device}")
     print(f" - Use TTA: {use_tta}")
     print(f" - Tile step size: {step_size}")

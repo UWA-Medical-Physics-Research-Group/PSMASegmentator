@@ -198,14 +198,14 @@ def pre_process(input_path,
 
         ct_stem = ct_path.stem
         pt_stem = pt_path.stem
-        print(f"Input CT stem: {ct_stem}; PET stem: {pt_stem}")
+        # print(f"Input CT stem: {ct_stem}; PET stem: {pt_stem}")
         if '_0000' in ct_stem and '_0001' in pt_stem:
             ct_base = ct_stem.rsplit('_0000', 1)[0]
             pt_base = pt_stem.rsplit('_0001', 1)[0]
         elif 'CT' in ct_stem and 'PT' in pt_stem:
             ct_base = ct_stem.rsplit('CT', 1)[0]
             pt_base = pt_stem.rsplit('PT', 1)[0]
-        print(f"CT base: {ct_base}; PET base: {pt_base}")
+        # print(f"CT base: {ct_base}; PET base: {pt_base}")
 
         # Acquire sizes and spacings
         ct_size = ct_img.GetSize()
@@ -220,7 +220,7 @@ def pre_process(input_path,
         list_of_lists_prepro = [[str(ct_path), str(pt_path)]]
         # Only include in pred list if prediction does not exist or overwrite is True
         pred_file = Path(output_pred_dir) / f"{ct_base}.nii.gz"
-        print(f"Prediction file path: {pred_file}")
+        # print(f"Prediction file path: {pred_file}")
         if pred_file.exists() and not overwrite:
             print(f"Skipping {ct_base}: prediction exists at {shorten_path(pred_file)}.")
             list_of_lists_pred = []

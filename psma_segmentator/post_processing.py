@@ -45,6 +45,7 @@ from monai.networks.nets import DenseNet121
 from monai.transforms import Compose, NormalizeIntensity
 import csv
 from datetime import datetime
+import time
 import subprocess
 import pydicom
 from sklearn.mixture import GaussianMixture
@@ -763,7 +764,6 @@ def generate_organ_segmentations(ct_map, organ_dir,
 
     # Use ct_map for robust case naming
     # Best practice: save organ segmentations in a dedicated organ_dir, not alongside CT, for clarity and separation of outputs
-    import time
     total_time_all_cases = 0.0
     n_cases_run = 0
 
@@ -1133,6 +1133,8 @@ def lesion_classifier(lesion_dir, # from output_pred_dir
         pt_path = pet_map.get(case_name)
         if pt_path and os.path.exists(pt_path):
             pt_img = nib.load(pt_path)
+        else:
+            logging.warning(f"PET image not found for case {case_name} at {pt_path}. SUV metrics will be skipped.")
 
         lesion_seg = get_nifti_fdata(lesion_path, verbose=False)
         organ_total = get_nifti_fdata(organ_total_path, verbose=False)
@@ -1587,12 +1589,12 @@ def post_process(
             ct_base = ct_base.rsplit('_0000', 1)[0]
         elif 'CT' in ct_base:
             ct_base = ct_base.rsplit('CT', 1)[0]
-        print(f"CT base: {ct_base}")
+        # print(f"CT base: {ct_base}")
 
         case_base = ct_base
         ct_map[case_base] = str(ct_path)
         pet_map[case_base] = str(pt_path)
-        print(f"Mapped case {case_base}: CT={ct_path}, PET={pt_path}")
+        # print(f"Mapped case {case_base}: CT={ct_path}, PET={pt_path}")
 
     # Derive output_base from output_pred_dir (used for all output dirs/files)
     output_base = Path(output_pred_dir).name.replace('_outputs', '')
