@@ -72,14 +72,14 @@ python -m psma_segmentator.cli -i INPUT_DIR -pat YOUR_TOKEN [options]
     Path to save the output `.nii.gz` segmentation files to. Recommended to specify this when passing direct NIfTIs via `-i_ct` and `-i_pet`.
     **Default:** `.../[input].parent/[input].name_outputs`
 
-- `-w`, `--weights_dir`
+- `-w`, `--weights_dir` 
     Path to either existing weights directory, or directory to download weights to.  
     **Default:** `~/.psmasegmentator/[version]`
 
-- `-chkpt`, `--checkpoint_name`
+- `-chkpt`, `--checkpoint_name` 
     Specify the name of the .pth file to use for inference (defaults to `checkpoint_final.pth`).
 
-- `-plans`, `--plans_name`
+- `-plans`, `--plans_name`  
     Name of the plans JSON file to use for inference (e.g., if changing patch size). 
 
 - `--version`  
@@ -109,7 +109,7 @@ python -m psma_segmentator.cli -i INPUT_DIR -pat YOUR_TOKEN [options]
     Path to directory containing organ segmentation masks for lesion classification.  
     **Default:** `.../output_dir.parent/organ_segmentations`
 
-- `--fast`
+- `--fast`  
     Uses 'fast' mode for inference. This disables Test-Time Augmentation (TTA), and uses the --fast flag in TotalSegmentator for faster organ segmentation generation.
 
 - `-f`, `--force`  
@@ -118,8 +118,8 @@ python -m psma_segmentator.cli -i INPUT_DIR -pat YOUR_TOKEN [options]
 - `-v`, `--verbose`  
     Enable detailed logging and progress messages.
 
-- `--save_log`
-    save the entire CLI stdout/stderr to a timestamped `.txt` file in the parent directory of `--output_dir` (or parent of `--input_dir`, or `cwd` if neither).
+- `--save_log`  
+    Save the entire CLI stdout/stderr to a timestamped `.txt` file in the parent directory of `--output_dir` (or parent of `--input_dir`, or `cwd` if neither).
 
 ---
 
@@ -244,7 +244,7 @@ docker run --rm --gpus all \
 | `--user $(id -u):$(id -g)` | Ensures output files are not owned by root |
 | `--shm-size=32g`           | Required for handling large 3D arrays      |
 | `-v <host>:<container>`    | Mount directories into the container       |
-| `-e TOTALSEG_HOME_DIR      | Set TotalSegmentator download location     |  
+| `-e TOTALSEG_HOME_DIR`     | Set TotalSegmentator download location     |  
 
 #### Container arguments
 
