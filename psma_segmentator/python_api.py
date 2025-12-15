@@ -301,6 +301,7 @@ This is free software, and you are welcome to redistribute it under certain cond
     else:
         # Use the provided directory and set environment variables accordingly
         setup_psma_segmentator(weights_dir)
+
     # Dynamically detect the liver classifier model file in weights_dir
     liver_model_path = None
     for f in Path(weights_dir).glob("*liver_classifier*.pth"):
@@ -308,6 +309,13 @@ This is free software, and you are welcome to redistribute it under certain cond
         break
     if liver_model_path is None:
         print("\nWARNING: No liver classifier model found in weights directory.")
+
+    # Try access TOTALSEG_HOME_DIR
+    if os.environ.get("TOTALSEG_HOME_DIR") is not None:
+        print(f"\nTOTALSEG_HOME_DIR detected (from docker): {os.environ.get('TOTALSEG_HOME_DIR')}")
+    else:
+        print("\nNo TOTALSEG_HOME_DIR detected in environment variables - using default ~/.totalsegmentator/... directory.")
+    
     
     # Preprocess the input files
     list_of_lists_prepro, list_of_lists_pred, ct_dicom_case_map = pre_process(input_path, 

@@ -64,7 +64,7 @@ python -m psma_segmentator.cli -i INPUT_DIR -pat YOUR_TOKEN [options]
     Path to input PET NIfTI file to be segmented.  
 
 - `-pat`, `--patient_token`  
-    Your patient-specific token for accessing releases from the `PSMASegmentator` GitHub repository.  
+    Your patient-specific token for accessing releases from the `PSMASegmentator` GitHub repository (see above).  
 
 ### Optional Arguments
 
@@ -75,6 +75,12 @@ python -m psma_segmentator.cli -i INPUT_DIR -pat YOUR_TOKEN [options]
 - `-w`, `--weights_dir`
     Path to either existing weights directory, or directory to download weights to.  
     **Default:** `~/.psmasegmentator/[version]`
+
+- `-chkpt`, `--checkpoint_name`
+    Specify the name of the .pth file to use for inference (defaults to `checkpoint_final.pth`).
+
+- `-plans`, `--plans_name`
+    Name of the plans JSON file to use for inference (e.g., if changing patch size). 
 
 - `--version`  
     Specify which release of `PSMASegmentator` to use (e.g., `v1.0.0`).  
@@ -109,22 +115,17 @@ python -m psma_segmentator.cli -i INPUT_DIR -pat YOUR_TOKEN [options]
 - `-f`, `--force`  
     Overwrite any existing preprocessing or segmentation outputs in the output directory.
 
-    - `-v`, `--verbose`  
+- `-v`, `--verbose`  
     Enable detailed logging and progress messages.
 
-
-Here is a **clean, complete, corrected, and expanded** README section covering:
-
-1. **Using a provided `.tar.gz` Docker image**, and
-2. **Building the Docker image yourself** (for developers).
-
-Everything is in clean Markdown, ready to paste into your repo.
+- `--save_log`
+    save the entire CLI stdout/stderr to a timestamped `.txt` file in the parent directory of `--output_dir` (or parent of `--input_dir`, or `cwd` if neither).
 
 ---
 
 ## Usage – Docker
 
-This section explains how to use the PSMA Segmentator via Docker.
+The following explains how to use PSMASegmentator via Docker.
 You may either:
 
 1. **Load a pre-built Docker image** provided as a `.tar.gz` file, or
@@ -143,8 +144,7 @@ Both approaches result in a Docker image named `psma-segmentator:latest`.
 * **System requirements**
 
   * **Shared memory (`--shm-size`)**:
-    32 GB recommended for large whole-body PET/CT images
-    (this uses system RAM, not GPU VRAM)
+    32 GB recommended for large whole-body PET/CT images.
 
   * **GPU VRAM**:
     At least 12–24 GB recommended depending on patch size
@@ -155,8 +155,7 @@ Both approaches result in a Docker image named `psma-segmentator:latest`.
 
 ### 2. Using a Pre-Built Docker Image (`.tar.gz`)
 
-If you received a Docker image file such as:
-
+If using a Docker image file such as:
 ```
 psma-segmentator_<yyyymmdd>.tar.gz
 ```
@@ -174,18 +173,11 @@ Verify the image is now available:
 docker images
 ```
 
-Expected output:
-
-```
-REPOSITORY             TAG       IMAGE ID       SIZE
-psma-segmentator       latest    <image_id>     <size>
-```
-
 ---
 
 ### 3. Building the Docker Image Yourself
 
-If you prefer to build the image locally from the repository:
+If opting to build the image locally from the repository:
 
 ```bash
 cd /path/to/psma-segmentator
@@ -209,10 +201,11 @@ CT_0000.nii.gz
 PT_0001.nii.gz
 ```
 
-#### Create weights directory (required for permissions)
+#### Create weights directories (required for permissions)
 
 ```bash
 mkdir -p /home/<user>/.psmasegmentator
+mkdir -p /home/<user>/.totalsegmentator
 ```
 
 ---
@@ -225,8 +218,10 @@ Below is the recommended full command:
 docker run --rm --gpus all \
     --user $(id -u):$(id -g) \
     --shm-size=32g \
-    -v /home/<user>/data:/data \
+    -v /home/<user>/<data>:/data \
     -v /home/<user>/.psmasegmentator:/weights \
+    -v /home/<user>/.totalsegmentator:/ts_weights \
+    -e TOTALSEG_HOME_DIR=/ts_weights \
     psma-segmentator:latest \
     -plans 'plans_reduced_patch.json' \
     -i_ct /data/CT_0000.nii.gz \
@@ -249,6 +244,7 @@ docker run --rm --gpus all \
 | `--user $(id -u):$(id -g)` | Ensures output files are not owned by root |
 | `--shm-size=32g`           | Required for handling large 3D arrays      |
 | `-v <host>:<container>`    | Mount directories into the container       |
+| `-e TOTALSEG_HOME_DIR      | Set TotalSegmentator download location     |  
 
 #### Container arguments
 
@@ -257,16 +253,12 @@ docker run --rm --gpus all \
 | `-plans` | Network plan JSON file                |
 | `-i_ct`  | CT input image                        |
 | `-i_pet` | PET input image                       |
+| `-i`     | Input directory                       |
 | `-o`     | Output directory                      |
 | `-pat`   | GitHub Personal Access Token          |
 | `-w`     | Model weights folder inside container |
 
-#### Optional flags
-
-* `--fast`
-* `-f`
-
-These enable faster inference and additional post-processing but are **not required** for normal operation.
+See 'CLI Usage' above for an explanation of the other optional arguments.
 
 ---
 ---
@@ -324,22 +316,22 @@ input_dir/
 The pipeline recursively scans all `.nii.gz` files and groups them by case using the filename pattern `caseid_0000.nii.gz` (CT) and `caseid_0001.nii.gz` (PET). This aligns with [nnUNet's](https://github.com/MIC-DKFZ/nnUNet) naming convention.
 
 #### Option 3: Direct NIfTI Input
-Alternatively, you can pass direct paths to CT and PET NIfTI files using the `-i_ct` and `-i_pet` flags. In this case, it is recommended to specify an `output_dir` as well, as the default output directory will be specific to the input file which can bloat the parent directory.
+Alternatively, you can pass direct paths to CT and PET NIfTI files using the `-i_ct` and `-i_pet` flags. *In this case, it is recommended to specify an `--output_dir` as well, as the default output directory will be specific to the input file which can bloat the parent directory*.
 
-All files must already be co-registered and in consistent orientation (LPS assumed). Additionally, all PET images already in `nii.gz` format are assumed to be SUV-converted.
+All files must already be co-registered and in consistent orientation (LPS assumed). Additionally, *all PET images already in `nii.gz` format are assumed to be SUV-converted*.
 
 If CT and PET images differ in shape, the CT will be automatically resampled to the PET image.
 
 ### RTSTRUCT Support (Optional)
 
-If `--rtstruct_processing` is enabled and an RTSTRUCT series is present alongside the CT and PET series' within each study folder, the RTSTRUCT `.dcm` file will be converted - using Plastimatch - into individual NIfTI masks, with optional renaming applied. Additionally, output NIfTI masks will be converted into an RTSTRUCT series and saved in a dedicated '_rtstructs' directory alongside the output directory.
+If `--rtstruct_processing` is enabled and an RTSTRUCT series is present alongside the CT and PET series' within each study folder, the RTSTRUCT `.dcm` file will be converted - using `Plastimatch` - into individual NIfTI masks, with optional renaming applied. Additionally, output NIfTI masks will be converted into an RTSTRUCT series and saved in a dedicated '_rtstructs' directory alongside the output directory.
 
 ---
 ---
 
 ## Inference and Output Segmentations
 
-An `nnUNetPredictor` is used for inference with the downloaded model weights, with the output predictions being saved to the specified (or default) `output_dir`. 
+An `nnUNetPredictor` is used for inference with the downloaded model weights, with the output predictions being saved to the specified (or default) `--output_dir`. 
 
 ---
 ---
