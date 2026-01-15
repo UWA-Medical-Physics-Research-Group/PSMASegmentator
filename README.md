@@ -35,10 +35,44 @@ cd path/to/where/you/put/PSMASegmentator
 pip install -e .
 ```
 
-Note: if you want the output segmentations in RTSTRUCT format (see below), you'll need `plastimatch`. This can be installed system-wide via:
+### Installing Plastimatch (required for RTSTRUCT output)
+
+If you want to convert any input RTSTRUCT files to NIfTIs and/or convert the output segmentations to RTSTRUCT format, you'll need `plastimatch`. This can be installed in two main ways:
+
+#### Option 1: Install via apt
 
 ```bash
 sudo apt install plastimatch
+```
+
+#### Option 2 — Install via PyPlastimatch (for any distro without apt plastimatch)
+
+Some distributions (notably Ubuntu 22.04) do not provide a `plastimatch` package via apt.
+In these cases, you can install a precompiled `plastimatch` binary using the `PyPlastimatch` installation utility.
+
+1. Install the Python package:
+
+`pip install pyplastimatch`
+
+2. Run the precompiled binary installer using your conda environment’s Python with `sudo` so it can write to `/usr/local/bin`:
+
+```bash
+sudo ~/miniconda3/envs/psma_segmentator/bin/python -c \
+"from pyplastimatch.utils.install import install_precompiled_binaries; install_precompiled_binaries()"
+```
+
+This downloads the correct Ubuntu‑22.04 plastimatch binary and installs it system‑wide.
+
+3. Verify the installation:
+```bash
+plastimatch --version
+which plastimatch
+```
+
+You should see:
+```bash
+plastimatch version 1.9.4-XX
+/usr/local/bin/plastimatch
 ```
 
 ---
@@ -72,11 +106,11 @@ python -m psma_segmentator.cli -i INPUT_DIR -pat YOUR_TOKEN [options]
     Path to save the output `.nii.gz` segmentation files to. Recommended to specify this when passing direct NIfTIs via `-i_ct` and `-i_pet`.
     **Default:** `.../[input].parent/[input].name_outputs`
 
-- `-w`, `--weights_dir` 
+- `-w`, `--weights_dir`          
     Path to either existing weights directory, or directory to download weights to.  
     **Default:** `~/.psmasegmentator/[version]`
 
-- `-chkpt`, `--checkpoint_name` 
+- `-chkpt`, `--checkpoint_name`     
     Specify the name of the .pth file to use for inference (defaults to `checkpoint_final.pth`).
 
 - `-plans`, `--plans_name`  

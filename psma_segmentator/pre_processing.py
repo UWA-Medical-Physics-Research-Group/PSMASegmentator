@@ -327,7 +327,7 @@ def confirm_already_preprocessed(ct_path,
             ct_spacing = ct_img.GetSpacing()
             pt_spacing = pt_img.GetSpacing()
             if verbose:
-                print(f"[DEBUG] {case_name}: CT size {ct_size}, spacing {ct_spacing}; PT size {pt_size}, spacing {pt_spacing}")
+                print(f"[INFO] {case_name}: CT size {ct_size}, spacing {ct_spacing}; PT size {pt_size}, spacing {pt_spacing}")
             if ct_size != pt_size or ct_spacing != pt_spacing:
                 match = False
                 print(f"[Shape/Spacing Mismatch] {case_name}: CT size {ct_size}, spacing {ct_spacing} != PT size {pt_size}, spacing {pt_spacing}")
@@ -534,6 +534,54 @@ def process_dicom(dicom_series,
 
 # RTSTRUCT HANDLING
 
+def extract_dir_distinguisher(rtstruct_dirs):
+    """
+    Given a list of RTSTRUCT directory paths, extract the distinguishing characters
+    from their names (not the .dcm file names, but the parent dir names).
+    
+    For example:
+      - /path/RTSTRUCT_1/ -> distinguisher: "1"
+      - /path/RTSTRUCT_2/ -> distinguisher: "2"
+      - /path/RTSTRUCT_ROI_v1/ -> distinguisher: "ROI_v1"
+    
+    Returns a dict: {dir_path: distinguisher_string}
+    """
+    if len(rtstruct_dirs) <= 1:
+        return {rtstruct_dirs[0]: ""} if rtstruct_dirs else {}
+    
+    dir_names = [Path(d).name for d in rtstruct_dirs]
+    
+    # Find the common prefix and suffix
+    common_prefix_len = 0
+    for i in range(min(len(name) for name in dir_names)):
+        if all(name[i] == dir_names[0][i] for name in dir_names):
+            common_prefix_len = i + 1
+        else:
+            break
+    
+    common_suffix_len = 0
+    for i in range(1, min(len(name) for name in dir_names) + 1):
+        if all(name[-i] == dir_names[0][-i] for name in dir_names):
+            common_suffix_len = i
+        else:
+            break
+    
+    # Extract distinguisher for each directory
+    distinguishers = {}
+    for dir_path, dir_name in zip(rtstruct_dirs, dir_names):
+        if common_suffix_len > 0:
+            distinguisher = dir_name[common_prefix_len:-common_suffix_len]
+        else:
+            distinguisher = dir_name[common_prefix_len:]
+        
+        # If still empty, use the full name as fallback
+        if not distinguisher:
+            distinguisher = dir_name
+        
+        distinguishers[dir_path] = distinguisher
+    
+    return distinguishers
+
 def process_rtstruct(dicom_series, 
                         study_dir, 
                         case_name,
@@ -544,62 +592,90 @@ def process_rtstruct(dicom_series,
     ct_dir = dicom_series['CT'][0]
     ct_dcm = next(ct_dir.glob("*.dcm"), None)
 
-    rtstruct_dirs = dicom_series.get('RTSTRUCT', [])
-    rt_dcm = next(rtstruct_dirs[0].glob("*.dcm"), None) if rtstruct_dirs else None
-    print(f"RTSTRUCT DICOM file for {case_name}: {rt_dcm}")
-
-    if rt_dcm is None:
-        print(f"No RTSTRUCT DICOM file found in {shorten_path(study_dir)}. Skipping GT generation for {case_name}.")
-
-        # # Load full CT series for shape and metadata
-        # reader = sitk.ImageSeriesReader()
-        # series_file_names = reader.GetGDCMSeriesFileNames(str(ct_dir))
-        # reader.SetFileNames(series_file_names)
-        # ct_image = reader.Execute()
-
-        # empty_mask = sitk.Image(ct_image.GetSize(), sitk.sitkUInt8)
-        # empty_mask.CopyInformation(ct_image)
-
-        # empty_mask_path = output_dir_gts / f"{case_name}.nii.gz"
-        # sitk.WriteImage(empty_mask, str(empty_mask_path))
-
-        # if verbose:
-        #     print(f"Empty GT mask saved at {shorten_path(empty_mask_path)} with shape {ct_image.GetSize()}")
+    rtstruct_data = dicom_series['RTSTRUCT'] if 'RTSTRUCT' in dicom_series else []
+    if not rtstruct_data:
+        print(f"No RTSTRUCT DICOM directories found for {case_name}. Skipping GT generation.")
         return
-    else:
+    print(f"Found {len(rtstruct_data)} RTSTRUCT DICOM directory(ies) for {case_name}.")
+
+    rtstruct_dirs = []
+    # Extract the series of RTSTRUCT directories
+    for i in range(len(rtstruct_data)):
+        rtstruct_dir = Path(rtstruct_data[i][0])
+        print(f"  RTSTRUCT directory {i+1}: {shorten_path(rtstruct_dir)}")
+        rtstruct_dirs.append(rtstruct_dir)
+    
+    # Extract distinguishers for organizing output
+    print(f"Processing {len(rtstruct_dirs)} RTSTRUCT(s) for case {case_name}")
+    distinguishers = extract_dir_distinguisher(rtstruct_dirs)
+    
+    # Process each RTSTRUCT directory
+    for rt_dir_idx, rt_dir in enumerate(rtstruct_dirs):
+        rt_dcm = next(rt_dir.glob("*.dcm"), None)
+        
+        if rt_dcm is None:
+            print(f"No RTSTRUCT DICOM file found in {shorten_path(rt_dir)}. Skipping this RTSTRUCT.")
+            continue
+        
+        # Create output subdirectory based on distinguisher
+        distinguisher = distinguishers[rt_dir]
+        if distinguisher:
+            output_dir_struct = output_dir_structs / case_name / f"rtstruct_{distinguisher}"
+        else:
+            # Fallback if only one RTSTRUCT
+            output_dir_struct = output_dir_structs / case_name
+        
         output_dir_structs.mkdir(parents=True, exist_ok=True)
         output_dir_gts.mkdir(parents=True, exist_ok=True)
-        output_dir_struct = output_dir_structs / case_name
-        os.makedirs(output_dir_struct, exist_ok=True)
-    
-    if verbose:
-        print(f"For RTSTRUCT conversion, using CT from {shorten_path(ct_dcm)} and RTSTRUCT from {shorten_path(rt_dcm)}")
+        output_dir_struct.mkdir(parents=True, exist_ok=True)
+        
+        if verbose:
+            print(f"Processing RTSTRUCT {rt_dir_idx+1}/{len(rtstruct_dirs)} for {case_name}")
+            print(f"  Using CT from {shorten_path(ct_dcm)}")
+            print(f"  Using RTSTRUCT from {shorten_path(rt_dcm)}")
+            print(f"  Output dir: {shorten_path(output_dir_struct)}")
+        
+        # Convert RTSTRUCT to NIfTI
+        plastimatch_rtstruct_to_nifti(
+            ct_dcm=ct_dcm,
+            ct_dir=ct_dir,
+            rt_dcm=rt_dcm,
+            output_dir_struct=output_dir_struct,
+            rename_map=None
+        )
 
-    plastimatch_rtstruct_to_nifti(
-        ct_dcm=ct_dcm,
-        rt_dcm=rt_dcm,
-        output_dir_struct=output_dir_struct,
-        rename_map=None
-    )
+        # Extract total_tumor_burden mask (supports both naming conventions)
+        gt_files = list(output_dir_struct.glob("*total_tumor_burden*.nii.gz"))
+        # Also check for TTB.nii.gz naming convention (case-insensitive)
+        if not gt_files:
+            gt_files = list(output_dir_struct.glob("*ttb*.nii.gz"))
+        if not gt_files:
+            gt_files = list(output_dir_struct.glob("*TTB*.nii.gz"))
+        
+        if not gt_files:
+            print(f"Warning: No total_tumor_burden mask found for {case_name} from RTSTRUCT {distinguisher}")
+            continue
+        if len(gt_files) > 1:
+            print(f"Warning: Multiple total_tumor_burden masks found. Using the first one.")
 
-    # Extract total_tumor_burden mask
-    gt_files = list(output_dir_struct.glob("*total_tumor_burden*.nii.gz"))
-    if not gt_files:
-        print(f"Warning: No total_tumor_burden mask found for {case_name}")
-        return
-    if len(gt_files) > 1:
-        print(f"Warning: Multiple total_tumor_burden masks found for {case_name}. Using the first one.")
+        # Save GT with distinguisher in filename if multiple RTSTRUCTs
+        if distinguisher:
+            gt_dest = output_dir_gts / f"{case_name}_{distinguisher}.nii.gz"
+        else:
+            gt_dest = output_dir_gts / f"{case_name}.nii.gz"
+        
+        shutil.copy(gt_files[0], gt_dest)
 
-    # output_dir_ttb.mkdir(exist_ok=True, parents=True)
-    gt_dest = output_dir_gts / f"{case_name}.nii.gz"
-    shutil.copy(gt_files[0], gt_dest)
+        if verbose:
+            print(f"Copied GT mask to {shorten_path(gt_dest)}")
 
-    if verbose:
-        print(f"Copied GT mask {gt_files[0].name} to {shorten_path(gt_dest)}")
-
-def plastimatch_rtstruct_to_nifti(ct_dcm, rt_dcm, output_dir_struct,
-                                    rename_map=None):
+def plastimatch_rtstruct_to_nifti(ct_dcm, 
+                                  ct_dir,
+                                  rt_dcm, 
+                                  output_dir_struct,
+                                  rename_map=None):
     ct_dcm = Path(ct_dcm)
+    ct_dir = Path(ct_dir)
     rt_dcm = Path(rt_dcm)
 
     try:
@@ -607,6 +683,7 @@ def plastimatch_rtstruct_to_nifti(ct_dcm, rt_dcm, output_dir_struct,
             'plastimatch', 'convert',
             '--input', str(rt_dcm),
             '--referenced-ct', str(ct_dcm),
+            # '--referenced-ct', str(ct_dir),
             '--output-prefix', str(output_dir_struct) + os.sep,
             '--prefix-format', 'nii.gz',
             '--prune-empty',
@@ -754,13 +831,12 @@ def handle_flattened_niftis(nii_files,
 
 # MODALITY AND PET VALIDATION
 
-
 def get_modality_dirs_and_validate_pet(study_dir, 
                                         output_dir=None,
                                         verbose=False):
     """
     Checks all DICOM dirs in a study, groups them by modality (CT/PT), and validates PET if found.
-    Returns a dict like {'CT': [Path], 'PT': [Path]} or empty dict if PET is invalid.
+    Returns a dict like {'CT': (dir, ds), 'PT': (dir, ds), 'RTSTRUCT': [(dir1, ds1), (dir2, ds2), ...]}
     """
     dicom_series = defaultdict(list)
     # Use a global or external error log if available
@@ -793,6 +869,7 @@ def get_modality_dirs_and_validate_pet(study_dir,
                     representative_ds = ds  # Just one is enough
             except Exception:
                 continue
+        
         if ext_missing and verbose:
             print(f"WARNING: DICOM files in {shorten_path(dicom_dir)} do not have '.dcm' extension. This may cause issues.")
 
@@ -817,6 +894,7 @@ def get_modality_dirs_and_validate_pet(study_dir,
             modality = None
 
         if modality == "PT":
+            # ... existing PET validation code ...
             missing_tags = []
 
             # Required tags and conditions
@@ -864,8 +942,14 @@ def get_modality_dirs_and_validate_pet(study_dir,
                 error_log.append({'case': case_name, 'reason': msg})
                 return None
 
+        # Store modalities: CT/PT as single tuple, RTSTRUCT as list of tuples
         if modality is not None:
-            dicom_series[modality] = (dicom_dir, ds)
+            if modality == "RTSTRUCT":
+                # Append to list for RTSTRUCT (supports multiple)
+                dicom_series[modality].append((dicom_dir, representative_ds))
+            else:
+                # Store as single tuple for CT/PT (overwrite if duplicate, keep largest)
+                dicom_series[modality] = (dicom_dir, representative_ds)
 
     if not {'CT', 'PT'}.issubset(dicom_series.keys()):
         msg = f"CT and/or PET series not found in {shorten_path(study_dir)}. Skipping entire study."
@@ -884,7 +968,8 @@ def get_modality_dirs_and_validate_pet(study_dir,
             for row in error_log:
                 writer.writerow(row)
         print(f"[INFO] Error log saved to {error_log_path}")
-    return dicom_series
+    
+    return dict(dicom_series)
 
 def get_dicom_dir_and_type(dir):
     p = Path(dir)
@@ -893,7 +978,7 @@ def get_dicom_dir_and_type(dir):
     try:
         entries = list(p.iterdir())
     except Exception as e:
-        print(f"[DEBUG] get_dicom_dir_and_type: cannot iterate {dir}: {e}")
+        print(f"get_dicom_dir_and_type: cannot iterate {dir}: {e}")
         return {}
 
     # Helper to append a directory to the map
@@ -922,7 +1007,7 @@ def get_dicom_dir_and_type(dir):
         try:
             sub_entries = list(sub_dir.iterdir())
         except Exception as e:
-            print(f"[DEBUG] Cannot iterate subdir {shorten_path(sub_dir)}: {e}")
+            print(f"Cannot iterate subdir {shorten_path(sub_dir)}: {e}")
             continue
 
         # Try a small sample of files first
@@ -935,7 +1020,8 @@ def get_dicom_dir_and_type(dir):
                 if modality in ('CT', 'PT', 'RTSTRUCT'):
                     _add(modality, sub_dir)
                     found_modality = modality
-                    # For RTSTRUCT keep scanning to collect others; for CT/PT we can break from sample
+                    # For RTSTRUCT keep ALL directories (don't filter to just one)
+                    # For CT/PT we can break from sample
                     if modality in ('CT', 'PT'):
                         break
             except Exception:
@@ -972,7 +1058,7 @@ def get_dicom_dir_and_type(dir):
             try:
                 child_entries = list(child.iterdir())
             except Exception as e:
-                print(f"[DEBUG] Cannot iterate nested subdir {shorten_path(child)}: {e}")
+                print(f"Cannot iterate nested subdir {shorten_path(child)}: {e}")
                 continue
 
             sample_files_child = [f for f in child_entries if f.is_file()][:10]
@@ -1003,11 +1089,12 @@ def get_dicom_dir_and_type(dir):
                     except Exception:
                         continue
 
-    # Print a summary of what we found for the given case dir
+    # Print a summary of what was found for the given case dir
     if dicom_map:
         # Re-order modality lists so the directory with the most files is first.
+        # BUT: for RTSTRUCT, keep ALL directories (don't filter to just one)
         for modality, dirs in list(dicom_map.items()):
-            if len(dirs) > 1:
+            if len(dirs) > 1 and modality != 'RTSTRUCT':  # Only filter non-RTSTRUCT
                 counts = []
                 for d in dirs:
                     try:
@@ -1018,7 +1105,7 @@ def get_dicom_dir_and_type(dir):
                     counts.append((d, cnt))
                 # sort descending by count
                 counts.sort(key=lambda x: x[1], reverse=True)
-                # replace list with sorted dirs
+                # replace list with sorted dirs (keeps only largest)
                 dicom_map[modality] = [c[0] for c in counts]
                 # user-visible message indicating choice
                 best_dir, best_count = counts[0]
@@ -1026,12 +1113,15 @@ def get_dicom_dir_and_type(dir):
                     other_dirs = [shorten_path(Path(x)) for x in dicom_map[modality][1:]]
                 except Exception:
                     other_dirs = []
-                print(f"[DEBUG] Multiple {modality} dirs found for {shorten_path(p)}. Choosing largest ({shorten_path(best_dir)}) with {best_count} files. Other dirs: {other_dirs}")
+                print(f"[INFO] Multiple {modality} dirs found for {shorten_path(p)}. Choosing largest ({shorten_path(best_dir)}) with {best_count} files. Other dirs: {other_dirs}")
+            elif modality == 'RTSTRUCT' and len(dirs) > 1:
+                # For RTSTRUCT, keep all directories and print info
+                print(f"[INFO] Multiple RTSTRUCT dirs found for {shorten_path(p)}: {[shorten_path(Path(x)) for x in dirs]}")
 
         summary = {k: [shorten_path(Path(p)) for p in v] for k, v in dicom_map.items()}
         # print(f"[DEBUG] DICOM mapping for {shorten_path(p)}: {summary}")
     else:
-        print(f"[DEBUG] No CT/PT/RTSTRUCT found in {shorten_path(p)}")
+        print(f"[WARNING] No CT/PT/RTSTRUCT found in {shorten_path(p)}")
 
     return dict(dicom_map)
 
