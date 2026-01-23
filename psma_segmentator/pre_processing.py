@@ -675,15 +675,15 @@ def plastimatch_rtstruct_to_nifti(ct_dcm,
                                   output_dir_struct,
                                   rename_map=None):
     ct_dcm = Path(ct_dcm)
-    ct_dir = Path(ct_dir)
+    ct_dir = Path(ct_dir) # Not used currently, but kept for potential future use
     rt_dcm = Path(rt_dcm)
 
     try:
         command = [
             'plastimatch', 'convert',
             '--input', str(rt_dcm),
-            '--referenced-ct', str(ct_dcm),
-            # '--referenced-ct', str(ct_dir),
+            # '--referenced-ct', str(ct_dcm),
+            '--referenced-ct', str(ct_dir),
             '--output-prefix', str(output_dir_struct) + os.sep,
             '--prefix-format', 'nii.gz',
             '--prune-empty',
