@@ -16,7 +16,10 @@ ENV DEBIAN_FRONTEND=noninteractive \
     NNUNET_FORCE_CPU_STITCHING=1 \
     CUDNN_BENCHMARK=0 \
     CUDNN_DETERMINISTIC=1 \
-    VENV_PATH=/opt/venv
+    VENV_PATH=/opt/venv \
+    TORCHINDUCTOR_CACHE_DIR=/tmp/torchinductor \
+    TORCH_HOME=/tmp/torch \
+    XDG_CACHE_HOME=/tmp/.cache
 
 # Install system dependencies
 RUN apt-get update && apt-get install -y \
@@ -55,5 +58,4 @@ RUN python -m pip install -e .
 # Add runtime check script
 RUN echo 'import torch\nprint("PyTorch:", torch.version)\nprint("CUDA:", torch.version.cuda)\nprint("cuDNN:", torch.backends.cudnn.version())\nprint("Device count:", torch.cuda.device_count())' > /app/check_env.py
 
-# Entry point for CLI
 ENTRYPOINT ["python", "-m", "psma_segmentator.cli"]

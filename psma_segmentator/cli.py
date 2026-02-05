@@ -87,6 +87,10 @@ def main():
         help="Specify SUV threshold to apply to segmentation outputs. Defaults to 0."
     )
     parser.add_argument(
+        "-exp_segs", "--expand_segmentations", required=False, action="store_true",
+        help="Expand segmentations during post-processing."
+    )
+    parser.add_argument(
         "-or", "--organ_dir", required=False, default=None,
         help="Directory containing organ segmentations for post-processing lesion classification. Defaults to .../output_dir.parent/organ_segmentations."
     )
@@ -174,7 +178,7 @@ def main():
 
             sys.stdout = Tee(original_stdout, log_file)
             sys.stderr = Tee(original_stderr, log_file)
-            print(f"[INFO] CLI output is being saved to: {log_path}")
+            print(f"CLI output is being saved to: {log_path}")
 
     # If 'torch' is already imported, warn the user. Changing CUDA_VISIBLE_DEVICES after
     # torch has initialized may not have any effect. We do NOT force a CPU fallback here;
@@ -217,6 +221,7 @@ def main():
                 preprocess_only = args.preprocess_only,
                 disable_postprocessing = args.disable_postprocessing,
                 suv_thresh = args.suv_threshold,
+                exp_segs = args.expand_segmentations,
                 organ_dir = args.organ_dir,
                 fast = args.fast,
                 show_w = args.show_w,

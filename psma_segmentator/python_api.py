@@ -192,6 +192,7 @@ def psma_segmentator(input_dir: str = None,
                         preprocess_only: bool = False,
                         disable_postprocessing: bool = False,
                         suv_thresh: float = 0.0,
+                        exp_segs: bool = False,
                         organ_dir: str = None,
                         fast: bool = False,
                         show_w: bool = False,
@@ -216,6 +217,7 @@ def psma_segmentator(input_dir: str = None,
         suv_thresh (float): SUV threshold for post-processing.
         organ_dir (str): Directory containing organ segmentations for post-processing lesion classification.
         fast (bool): If True, uses fast mode for inference, disabling TTA and using fast organ segmentation.
+        exp_segs (bool): If True, expands segmentations in the output directory.
     """
 
     copyright_txt = """
@@ -364,6 +366,7 @@ This is free software, and you are welcome to redistribute it under certain cond
             ct_dicom_case_map=ct_dicom_case_map,
             device=device,
             suv_thresh=suv_thresh,
+            exp_segs=exp_segs,
             fast=fast,
             verbose=verbose,
             overwrite=overwrite,

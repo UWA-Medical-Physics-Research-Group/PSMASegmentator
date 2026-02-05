@@ -315,28 +315,310 @@ totalseg_labels_and_regions = {
     }
 }
 
-def expand_segmentations(lesion_dir, organ_dir, ct_map, pet_map):
+## LESION EXPANSION ##
+
+# Connected Component Analysis with organ-aware Fast Marching expansion from SUVmax voxel
+
+def run_cca_fast_marching(lesion_mask, pet_image, organ_total, suv_threshold, local_thresh_ratio=0.5):
+    """
+    Identifies connected components and applies organ-aware Fast Marching expansion from SUVmax voxel.
+    
+    For each lesion component:
+    1. Identify which organ it belongs to (most common organ label within the component)
+    2. Only allow expansion within that same organ (or background if no organ)
+    3. Apply SUV-based threshold (max of global threshold or local_thresh_ratio * SUVmax)
+    """
+    try:
+        struct = generate_binary_structure(3, 1)
+    except Exception:
+        struct = generate_binary_structure(2, 1)
+
+    labeled, ncomp = label(lesion_mask, structure=struct)
+    result = np.copy(lesion_mask).astype(bool)
+
+    if ncomp == 0:
+        return result.astype(np.uint8)
+
+    for comp_id in range(1, ncomp + 1):
+        comp_mask = (labeled == comp_id)
+        if not np.any(comp_mask):
+            continue
+            
+        # Identify which organ this component is in
+        if organ_total is not None:
+            organ_labels_in_comp = organ_total[comp_mask]
+            if organ_labels_in_comp.size > 0:
+                # Find the most common organ label (excluding 0/background)
+                unique_labels, counts = np.unique(organ_labels_in_comp, return_counts=True)
+                non_zero_mask = unique_labels > 0
+                if np.any(non_zero_mask):
+                    primary_organ = unique_labels[non_zero_mask][np.argmax(counts[non_zero_mask])]
+                else:
+                    primary_organ = 0  # Component is in background
+            else:
+                primary_organ = 0
+        else:
+            primary_organ = 0
+            
+        # Create organ constraint mask: allow expansion only within same organ or background
+        if organ_total is not None and primary_organ > 0:
+            # Allow expansion within the same organ only
+            organ_constraint = (organ_total == primary_organ)
+        else:
+            # If in background, forbid expansion into any organ
+            if organ_total is not None:
+                organ_constraint = (organ_total == 0)
+            else:
+                organ_constraint = np.ones_like(pet_image, dtype=bool)
+        
+        # Extract SUV values inside the component
+        comp_suv = pet_image * comp_mask
+        max_suv = float(np.max(comp_suv))
+        if max_suv <= 0 or np.isnan(max_suv):
+            continue
+
+        # Choose conservative local threshold
+        local_thresh = max(suv_threshold, max_suv * local_thresh_ratio)
+
+        # Threshold the PET image with organ constraint
+        thr_mask = np.logical_and(pet_image >= local_thresh, organ_constraint)
+        
+        # Label thresholded regions
+        thr_labeled, thr_n = label(thr_mask, structure=struct)
+        seed_idx = np.unravel_index(np.argmax(comp_suv), comp_suv.shape)
+        seed_label = thr_labeled[seed_idx]
+        
+        if seed_label == 0:
+            # Seed not included in thresholded mask; keep original component
+            region = comp_mask
+        else:
+            # Take the connected region containing the seed
+            region = thr_labeled == seed_label
+
+        # Combine with result
+        result = np.logical_or(result, region)
+
+    return result.astype(np.uint8)
+
+# Compute dynamic SUV threshold using liver uptake via GMM
+
+def find_liver_reference_uptake(liver_mask, pet_image):
+    """
+    Computes dynamic SUV threshold using liver uptake via Gaussian Mixture Model.
+    """
+    liver_suvs = pet_image[liver_mask > 0].reshape(-1, 1)
+    gmm = GaussianMixture(n_components=2, random_state=0).fit(liver_suvs)
+    means = gmm.means_.flatten()
+    dominant_mode = np.min(means)  # Conservative: assume lower mean is background
+    return dominant_mode * 1.5  # Dynamic threshold factor
+
+# Watershed filtering to segment contiguous high-uptake regions
+
+def watershed_filtering(pet_image, percentile=99):
+    """
+    Applies watershed filtering to PET image to segment contiguous high-uptake regions.
+    """
+    # Simple, robust heuristic: threshold at a high percentile and label connected components.
+    try:
+        pct = np.nanpercentile(pet_image, percentile)
+    except Exception:
+        pct = np.nanpercentile(pet_image[np.isfinite(pet_image)], percentile)
+
+    high_mask = pet_image >= max(pct, 0.0)
+    try:
+        struct = generate_binary_structure(3, 1)
+        labeled, n = label(high_mask, structure=struct)
+    except Exception:
+        struct = generate_binary_structure(2, 1)
+        labeled, n = label(high_mask, structure=struct)
+
+    return labeled
+
+# Organ-aware lesion expansion with triple constraints
+
+def expand_lesion_segmentation(lesion_mask, 
+                                pet_image, 
+                                organ_total, 
+                                suv_threshold, 
+                                max_volume_factor=2.0,
+                                watershed_labels=None):
+    """
+    Expands lesion mask with triple constraints to prevent over-expansion:
+    
+    1. **Organ-aware**: Each component can only expand within its primary organ (prevents crossing boundaries)
+    2. **Volume-limited**: Expansion capped at max_volume_factor * original size (prevents full organ takeover)
+    3. **Watershed-constrained**: Only expands within contiguous high-uptake regions (prevents leaking into distant areas)
+    
+    For each lesion component:
+    - Identify which organ it belongs to (most common label within component)
+    - Build forbidden mask: disallow expansion into different organs
+    - Apply SUV threshold constraint
+    - Apply watershed region constraint (if provided)
+    - Iteratively dilate until volume limit or no valid candidates remain
+    """
+    from scipy.ndimage import binary_dilation
+    
+    if lesion_mask is None or lesion_mask.sum() == 0:
+        return lesion_mask.astype(np.uint8)
+    
+    try:
+        struct = generate_binary_structure(3, 1)
+    except Exception:
+        struct = generate_binary_structure(2, 1)
+    
+    lesion_labeled, ncomp = label(lesion_mask, structure=struct)
+    final = np.zeros_like(lesion_mask, dtype=bool)
+    
+    for cid in range(1, ncomp + 1):
+        comp = lesion_labeled == cid
+        orig_vol = np.sum(comp)
+        if orig_vol == 0:
+            continue
+        max_voxels = int(max_volume_factor * orig_vol)
+        
+        # Identify which organ this component is primarily in
+        if organ_total is not None:
+            organ_labels_in_comp = organ_total[comp]
+            if organ_labels_in_comp.size > 0:
+                unique_labels, counts = np.unique(organ_labels_in_comp, return_counts=True)
+                non_zero_mask = unique_labels > 0
+                if np.any(non_zero_mask):
+                    primary_organ = unique_labels[non_zero_mask][np.argmax(counts[non_zero_mask])]
+                else:
+                    primary_organ = 0  # Component is in background
+            else:
+                primary_organ = 0
+        else:
+            primary_organ = 0
+        
+        # Build forbidden mask: forbid expansion into DIFFERENT organs
+        if organ_total is None:
+            forbidden = np.zeros_like(pet_image, dtype=bool)
+        elif primary_organ > 0:
+            # Lesion is in an organ: forbid expansion into different organs (but allow same organ + background)
+            forbidden = np.logical_and(organ_total > 0, organ_total != primary_organ)
+        else:
+            # Lesion is in background: forbid expansion into ANY organ
+            forbidden = (organ_total > 0)
+        
+        # Watershed constraint: only expand within connected high-uptake regions
+        if watershed_labels is not None:
+            overlapping_watershed_labels = np.unique(watershed_labels[comp])
+            overlapping_watershed_labels = overlapping_watershed_labels[overlapping_watershed_labels > 0]
+            
+            if len(overlapping_watershed_labels) > 0:
+                watershed_zone = np.isin(watershed_labels, overlapping_watershed_labels)
+            else:
+                watershed_zone = np.ones_like(lesion_mask, dtype=bool)
+        else:
+            watershed_zone = np.ones_like(lesion_mask, dtype=bool)
+        
+        # Iterative expansion with all constraints
+        current = comp.copy()
+        iterations = 0
+        while True:
+            iterations += 1
+            
+            # Candidate expansion: one-voxel dilation
+            dilated = binary_dilation(current, structure=struct)
+            candidate = np.logical_and(dilated, np.logical_not(current))
+            
+            # Apply triple constraints:
+            # 1. SUV threshold
+            candidate = np.logical_and(candidate, pet_image >= suv_threshold)
+            # 2. Organ boundary (no crossing into different organs)
+            candidate = np.logical_and(candidate, np.logical_not(forbidden))
+            # 3. Watershed regions (stay within contiguous high-uptake areas)
+            candidate = np.logical_and(candidate, watershed_zone)
+            
+            # Add candidates
+            new = np.logical_or(current, candidate)
+            
+            # Volume limit check
+            if np.sum(new) > max_voxels:
+                break
+            if np.array_equal(new, current):
+                break
+                
+            current = new
+            
+            # Safety limit on iterations
+            if iterations > 50:
+                break
+        
+        final = np.logical_or(final, current)
+    
+    return final.astype(np.uint8)
+
+# Main function to expand segmentations in a directory
+
+def expand_segmentations(
+    lesion_dir,
+    organ_dir,
+    ct_map,
+    pet_map,
+    *,
+    max_volume_factor=3.5,
+    local_thresh_ratio=0.8,
+    suv_default=3.0,
+    watershed_percentile=99.2,
+    watershed=True,
+    output_pred_dir_expanded=None,
+    overwrite=False,
+    verbose=False
+):
     """
     Expands lesion segmentations using organ-aware constraints, dynamic SUV thresholding,
     watershed filtering, and fast marching expansion.
+    
+    **Expansion Strategy (Triple Constraints):**
+    1. **CCA + Region Growing**: Expand from SUVmax voxel using adaptive threshold
+    2. **Organ Boundaries**: Never cross into different organs (liver mets stay in liver, etc.)
+    3. **Watershed Filtering**: Stay within contiguous high-uptake PET regions (optional)
+    4. **Volume Limiting**: Cap expansion to prevent full organ takeover
 
     Parameters:
     - lesion_dir: Directory containing predicted lesion NIfTI files.
     - organ_dir: Directory containing TotalSegmentator organ NIfTI files.
-    - ct_map: Dictionary mapping case_name to CT image file path.
-    - pet_map: Dictionary mapping case_name to PET image file path.
+    - ct_map: Dictionary mapping case names to CT file paths.
+    - pet_map: Dictionary mapping case names to PET file paths.
+    - max_volume_factor: Maximum growth factor per component (prevents full organ takeover).
+    - local_thresh_ratio: Ratio of SUVmax used for local region growing (CCA step).
+    - suv_default: Fallback SUV threshold when liver/aorta references are missing.
+    - watershed_percentile: Percentile used for high-uptake coarse regions.
+    - watershed: If True, apply watershed constraint to keep expansion within contiguous hotspots.
+    - output_pred_dir_expanded: Output directory for expanded segmentations. If None, uses lesion_dir with '_expanded' suffix.
+    - overwrite: If True, overwrite existing expanded segmentations.
+    - verbose: If True, print progress messages.
     """
 
-    for file_name in os.listdir(lesion_dir):
+    if output_pred_dir_expanded is None:
+        output_pred_dir_expanded = lesion_dir.rstrip(os.sep) + "_expanded"
+    os.makedirs(output_pred_dir_expanded, exist_ok=True)
+
+    for file_name in tqdm(os.listdir(lesion_dir), desc="Expanding segmentations"):
         if not file_name.endswith('.nii.gz'):
             continue
 
         case_name = file_name.split('.')[0]
         lesion_path = os.path.join(lesion_dir, file_name)
-        pet_path = pet_map.get(case_name)
-        ct_path = ct_map.get(case_name)
 
-        if not pet_path or not ct_path:
+        out_name = f"{case_name}.nii.gz"
+        out_path = os.path.join(output_pred_dir_expanded, out_name)
+        if os.path.exists(out_path):
+            if not overwrite:
+                # Skip processing if output already exists
+                print(f"Skipping already-expanded case: {case_name} at {out_path}")
+                continue
+            else:
+                if verbose:
+                    print(f"Overwriting already-expanded case: {case_name} at {out_path}")
+
+        # Retrieve CT and PET paths from maps
+        ct_path = ct_map.get(case_name)
+        pet_path = pet_map.get(case_name)
+
+        if not pet_path or not ct_path or not os.path.exists(pet_path) or not os.path.exists(ct_path):
             print(f"Missing PET/CT for case {case_name}")
             continue
 
@@ -397,182 +679,36 @@ def expand_segmentations(lesion_dir, organ_dir, ct_map, pet_map):
             else:
                 suv_threshold = None
 
-        # If still no threshold, use conservative default = 3
+        # If still no threshold, use conservative default
         if suv_threshold is None:
-            suv_threshold = 3.0
+            suv_threshold = float(suv_default)
             print(f"[INFO] Liver and aorta masks missing or empty for {case_name}; using fallback SUV threshold = {suv_threshold}")
 
-        # 1) Grow each connected component conservatively based on local SUV (CCA + region-grow)
-        expanded_mask = run_cca_fast_marching(lesion_mask, pet_image, suv_threshold)
+        # STEP 1: CCA + Fast Marching with organ awareness
+        expanded_mask = run_cca_fast_marching(lesion_mask, pet_image, organ_total_data, suv_threshold, local_thresh_ratio=local_thresh_ratio)
 
-        # 2) Produce coarse high-uptake regions (useful for diagnostics / downstream heuristics)
-        watershed_labels = watershed_filtering(pet_image)
+        # STEP 2: Watershed filtering (optional) - identifies contiguous high-uptake regions
+        if watershed:
+            watershed_labels = watershed_filtering(pet_image, percentile=watershed_percentile)
+        else:
+            watershed_labels = None
 
-        # 3) Constrain and finalize expansion with organ-aware rules and volume caps
-        # Forbid crossing any organ boundaries: organ_total_data > 0 are considered organs
-        final_mask = expand_lesion_segmentation(expanded_mask, pet_image, organ_total_data, suv_threshold)
+        # STEP 3: Constrained iterative expansion with organ boundaries + volume limits + watershed
+        final_mask = expand_lesion_segmentation(expanded_mask, 
+                                                pet_image, 
+                                                organ_total_data, 
+                                                suv_threshold, 
+                                                max_volume_factor=max_volume_factor,
+                                                watershed_labels=watershed_labels)
 
-        # Save final expanded segmentation next to the original with suffix _expanded.nii.gz
-        # Save into a dedicated expanded directory adjacent to lesion_dir
-        expanded_dir = f"{lesion_dir.rstrip(os.sep)}_expanded"
-        os.makedirs(expanded_dir, exist_ok=True)
-        out_name = f"{case_name}_expanded.nii.gz"
-        out_path = os.path.join(expanded_dir, out_name)
+        # Save final expanded segmentation into the chosen output directory
         try:
             final_img = nib.Nifti1Image(final_mask.astype(np.uint8), affine=lesion_img.affine, header=lesion_img.header)
             nib.save(final_img, out_path)
-            print(f"Processed and saved expanded segmentation for case: {case_name} -> {out_name}")
+            # print(f"Processed and saved expanded segmentation for case: {case_name} -> {out_name}")
         except Exception as e:
             print(f"Warning: Failed to save expanded segmentation for {case_name}: {e}")
-
-def run_cca_fast_marching(lesion_mask, pet_image, suv_threshold):
-    """
-    Identifies connected components and applies Fast Marching expansion from SUVmax voxel.
-    """
-    # lesion_mask and pet_image are numpy arrays in (z,y,x) or (x,y,z) depending on upstream usage.
-    # We'll treat them as matching shapes. The approach here is conservative:
-    #  - label connected components in lesion_mask
-    #  - for each component find its SUVmax voxel
-    #  - perform a thresholded region grow on the PET image using a threshold that is
-    #    the max of (suv_threshold, 0.5 * SUVmax_of_component). This captures local high-uptake
-    #    tissue while avoiding overgrowth.
-    try:
-        struct = generate_binary_structure(3, 1)
-    except Exception:
-        # Fallback: if lesion_mask is 2D for some reason
-        struct = generate_binary_structure(2, 1)
-
-    labeled, ncomp = label(lesion_mask, structure=struct)
-    result = np.copy(lesion_mask).astype(bool)
-
-    if ncomp == 0:
-        return result.astype(np.uint8)
-
-    # Thresholded image caches
-    for comp_id in range(1, ncomp + 1):
-        comp_mask = (labeled == comp_id)
-        if not np.any(comp_mask):
-            continue
-        # extract SUV values inside the component
-        comp_suv = pet_image * comp_mask
-        max_suv = float(np.max(comp_suv))
-        if max_suv <= 0 or np.isnan(max_suv):
-            # nothing to grow from
-            continue
-
-        # choose conservative local threshold
-        local_thresh = max(suv_threshold, max_suv * 0.5)
-
-        # threshold the PET image and pick the connected region that contains the seed (max voxel)
-        thr_mask = pet_image >= local_thresh
-        # Label thresholded regions
-        thr_labeled, thr_n = label(thr_mask, structure=struct)
-        seed_idx = np.unravel_index(np.argmax(comp_suv), comp_suv.shape)
-        seed_label = thr_labeled[seed_idx]
-        if seed_label == 0:
-            # seed not included in thresholded mask; fall back to original component
-            region = comp_mask
-        else:
-            region = thr_labeled == seed_label
-
-        # Combine conservative region with original component
-        result = np.logical_or(result, region)
-
-    return result.astype(np.uint8)
-
-def watershed_filtering(pet_image):
-    """
-    Applies watershed filtering to PET image to segment contiguous high-uptake regions.
-    """
-    # Simple, robust heuristic: threshold at a high percentile and label connected components.
-    try:
-        pct = np.nanpercentile(pet_image, 99)
-    except Exception:
-        pct = np.nanpercentile(pet_image[np.isfinite(pet_image)], 99)
-
-    high_mask = pet_image >= max(pct, 0.0)
-    try:
-        struct = generate_binary_structure(3, 1)
-        labeled, n = label(high_mask, structure=struct)
-    except Exception:
-        struct = generate_binary_structure(2, 1)
-        labeled, n = label(high_mask, structure=struct)
-
-    return labeled
-
-def find_liver_reference_uptake(liver_mask, pet_image):
-    """
-    Computes dynamic SUV threshold using liver uptake via Gaussian Mixture Model.
-    """
-    liver_suvs = pet_image[liver_mask > 0].reshape(-1, 1)
-    gmm = GaussianMixture(n_components=2, random_state=0).fit(liver_suvs)
-    means = gmm.means_.flatten()
-    dominant_mode = np.min(means)  # Conservative: assume lower mean is background
-    return dominant_mode * 1.5  # Dynamic threshold factor
-
-def expand_lesion_segmentation(lesion_mask, pet_image, organ_total, suv_threshold, max_volume_factor=2.0):
-    """
-    Expands lesion mask using SUV threshold, organ-aware constraints, and volume limits.
-    """
-    # Conservative expansion strategy:
-    # - For each connected component in lesion_mask, iteratively perform a single-voxel
-    #   dilation constrained to voxels where PET >= suv_threshold and not inside forbidden organs
-    # - Stop when either no new voxels are added or the component reaches max_volume_factor * original_volume
-
-    from scipy.ndimage import binary_dilation
-
-    if lesion_mask is None or lesion_mask.sum() == 0:
-        return lesion_mask.astype(np.uint8)
-
-    # build forbidden mask: do not expand into ANY organ voxel. organ_total contains
-    # labeled organs (0 == background). We consider any organ_total > 0 as forbidden.
-    if organ_total is None:
-        forbidden = np.zeros_like(pet_image, dtype=bool)
-    else:
-        # organ_total may be binary or labeled; consider any positive label as organ
-        forbidden = (organ_total > 0)
-
-    try:
-        struct = generate_binary_structure(3, 1)
-    except Exception:
-        struct = generate_binary_structure(2, 1)
-
-    labeled, ncomp = label(lesion_mask, structure=struct)
-    final = np.zeros_like(lesion_mask, dtype=bool)
-
-    for cid in range(1, ncomp + 1):
-        comp = labeled == cid
-        orig_vol = np.sum(comp)
-        if orig_vol == 0:
-            continue
-        max_voxels = int(max_volume_factor * orig_vol)
-
-        current = comp.copy()
-        iterations = 0
-        while True:
-            iterations += 1
-            # candidate expansion: one-voxel dilation
-            dilated = binary_dilation(current, structure=struct)
-            candidate = np.logical_and(dilated, np.logical_not(current))
-            # apply SUV constraint and forbidden organ mask
-            candidate = np.logical_and(candidate, pet_image >= suv_threshold)
-            candidate = np.logical_and(candidate, np.logical_not(forbidden))
-
-            # add candidates
-            new = np.logical_or(current, candidate)
-            if np.sum(new) > max_voxels:
-                # if we would exceed max size, stop and keep current
-                break
-            if np.array_equal(new, current):
-                break
-            current = new
-            # safety to prevent infinite loops
-            if iterations > 50:
-                break
-
-        final = np.logical_or(final, current)
-
-    return final.astype(np.uint8)
+    return output_pred_dir_expanded
 
 
 ## Apply SUV threshold to segmentation outputs ##
@@ -894,15 +1030,19 @@ def calc_suv_metrics(pt_img, mask_array):
     voxel_volume_mm3 = np.prod(spacing)
     voxel_volume_ml = voxel_volume_mm3 / 1000
 
-    suv_values = pet_array[mask_array]
+    suv_values = pet_array[mask_array] # this a macro-level SUV extraction
     suv_mean = np.mean(suv_values)
     suv_max = np.max(suv_values)
-    suv_total = suv_mean * np.sum(mask_array) * voxel_volume_ml
+    ttv = np.sum(mask_array) * voxel_volume_ml  # Total Tumor Volume in mL
+    tlu = ttv * suv_mean  # Total Lesion Uptake
+    # Calculate TLQ, given by dividing TTV by SUVmean
+    tlq = ttv / suv_mean if suv_mean != 0 else 0
 
     return {
         'SUVmean': round_sig(suv_mean, 6),
         'SUVmax': round_sig(suv_max, 6),
-        'SUVtotal': round_sig(suv_total, 6)
+        'TLU': round_sig(tlu, 6),
+        'TLQ': round_sig(tlq, 6)
     }
 
 ## Lesion classification and metric calculation ##
@@ -1045,7 +1185,7 @@ def classify_case(pred_seg,
         pred_vol = calc_lesion_volume(pt_img, pred_lesion)
 
         case_dict["lesions"][f"lesion_{pred_label}"] = {
-            "ts_code": ts_code.strip(),
+            # "ts_code": ts_code.strip(), # not necessary info
             "ts_name": ts_name.strip(),
             "volume_cm3": pred_vol
         }
@@ -1098,7 +1238,8 @@ def classify_case(pred_seg,
             case_dict["lesion_metrics"]["patient"] = {
                 "SUVmean": suv_metrics.get("SUVmean", 0),
                 "SUVmax": suv_metrics.get("SUVmax", 0),
-                "SUVtotal": suv_metrics.get("SUVtotal", 0)
+                "TLU": suv_metrics.get("TLU", 0),
+                "TLQ": suv_metrics.get("TLQ", 0)
             }
 
     return case_dict
@@ -1472,7 +1613,7 @@ def update_liver_mets(lesion_results_dict,
     lesion_results_dict["All"]["patient_metrics"]["liver_mets"] = total_counts
 
 
-def collate_nomogram_info(lesion_results_dict, lesion_results_dir, 
+def collate_csv_summary_info(lesion_results_dict, lesion_results_dir, 
                             verbose=False, anonymize=False):
     # Filter out summary entries
     cases = [case for case in lesion_results_dict.keys() if case not in ("All", "SUV_threshold")]
@@ -1501,34 +1642,41 @@ def collate_nomogram_info(lesion_results_dict, lesion_results_dir,
                 case_counter += 1
             anonymized_map[case] = anon_name
 
-    # Metrics column names (add SUVmax after SUVmean)
-    columns = ["Case", "Tumour_SUVmean", "Tumour_SUVmax", "Number_of_lesions", "TTV", "Bone_mets", "Liver_mets"]
+    # Metrics column names
+    columns = ["Case", "Number_of_lesions", "TTV", "Tumour_SUVmean", "Tumour_SUVmax", "TLU", "TLQ", "Bone_mets", "Visceral_mets", "Liver_mets"]
 
     rows = []
     for case in cases:
         case_display = anonymized_map[case] if anonymize else case
         case_data = lesion_results_dict[case]
-        suvmean = case_data.get("lesion_metrics", {}).get("patient", {}).get("SUVmean", 0)
-        suvmax = case_data.get("lesion_metrics", {}).get("patient", {}).get("SUVmax", 0)
-        # Round to 4 significant figures
-        suvmean = float(f"{suvmean:.4g}") if isinstance(suvmean, (int, float)) else suvmean
-        suvmax = float(f"{suvmax:.4g}") if isinstance(suvmax, (int, float)) else suvmax
 
         number_lesions = case_data.get("lesion_metrics", {}).get("region", {}).get("whole_body", {}).get("lesion_count", 0)
 
         ttv = case_data.get("lesion_metrics", {}).get("region", {}).get("whole_body", {}).get("total_burden", 0)
         ttv = float(f"{ttv:.4g}") if isinstance(ttv, (int, float)) else ttv
 
+        suvmean = case_data.get("lesion_metrics", {}).get("patient", {}).get("SUVmean", 0)
+        suvmax = case_data.get("lesion_metrics", {}).get("patient", {}).get("SUVmax", 0)
+        tlu = case_data.get("lesion_metrics", {}).get("patient", {}).get("TLU", 0)
+        tlq = case_data.get("lesion_metrics", {}).get("patient", {}).get("TLQ", 0)
+        # Round to 4 significant figures
+        suvmean = float(f"{suvmean:.4g}") if isinstance(suvmean, (int, float)) else suvmean
+        suvmax = float(f"{suvmax:.4g}") if isinstance(suvmax, (int, float)) else suvmax
+        tlu = float(f"{tlu:.4g}") if isinstance(tlu, (int, float)) else tlu
+        tlq = float(f"{tlq:.4g}") if isinstance(tlq, (int, float)) else tlq
+
         bone_lesion_count = case_data.get("lesion_metrics", {}).get("region", {}).get("bone", {}).get("lesion_count", 0)
         bone_mets = bool(bone_lesion_count > 0)
 
+        visceral_lesion_count = case_data.get("lesion_metrics", {}).get("region", {}).get("visceral", {}).get("lesion_count", 0)
+        visceral_mets = bool(visceral_lesion_count > 0)
+
         liver_mets = bool(case_data.get("lesion_metrics", {}).get("patient", {}).get("liver_mets", 0))
 
-        rows.append([case_display, suvmean, suvmax, number_lesions, ttv, bone_mets, liver_mets, extract_date_from_case(case)])
-
+        rows.append([case_display, number_lesions, ttv, suvmean, suvmax,  tlu, tlq, bone_mets, visceral_mets, liver_mets, extract_date_from_case(case)])
     # Sort by date if present
-    rows.sort(key=lambda x: (x[7] is None, x[7]))  # None dates go last (date is at index 7)
-    rows = [[case, suvmean, suvmax, number_lesions, ttv, bone_mets, liver_mets] for case, suvmean, suvmax, number_lesions, ttv, bone_mets, liver_mets, _ in rows]
+    rows.sort(key=lambda x: (x[10] is None, x[10]))  # None dates go last (date is at index 10)
+    rows = [[case, number_lesions, ttv, suvmean, suvmax, tlu, tlq, bone_mets, visceral_mets, liver_mets] for case, number_lesions, ttv, suvmean, suvmax, tlu, tlq, bone_mets, visceral_mets, liver_mets, _, in rows]
 
     # Save mapping if anonymizing
     if anonymize:
@@ -1544,8 +1692,8 @@ def collate_nomogram_info(lesion_results_dict, lesion_results_dir,
     else:
         csv_name = "biomarker_info.csv"
 
-    csv_path = os.path.join(lesion_results_dir, csv_name)
-    # Write CSV
+        csv_path = os.path.join(lesion_results_dir, csv_name)
+        # Write CSV
     os.makedirs(lesion_results_dir, exist_ok=True)
     with open(csv_path, 'w', newline='') as f:
         writer = csv.writer(f)
@@ -1566,6 +1714,7 @@ def post_process(
         ct_dicom_case_map, # for RTSTRUCT conversion (requires original DICOM)
         device,
         suv_thresh,
+        exp_segs,
         fast,
         verbose,
         overwrite,
@@ -1604,6 +1753,8 @@ def post_process(
     rtstruct_dir = os.path.join(output_parent, f"{output_base}_output_rtstructs")
     organ_dir_default = os.path.join(output_parent, f"{output_base}_organ_segmentations")
     lesion_results_dir = os.path.join(output_parent, f"{output_base}_lesion_classification")
+    if exp_segs:
+        lesion_results_dir += "_expanded"
 
     # SUV THRESHOLDING
     if suv_thresh > 0:
@@ -1639,8 +1790,22 @@ def post_process(
     # Generate organ segmentations for each case in ct_map
     generate_organ_segmentations(ct_map, organ_dir,
                                     device, fast, verbose)
+    
+    # SEGMENTATION EXPANSION
+    if exp_segs:
+        logging.info(f"Expanding segmentation outputs in {output_pred_dir}")
+        output_pred_dir_expanded = expand_segmentations(
+                                        lesion_dir=output_pred_dir,
+                                        organ_dir=organ_dir,
+                                        ct_map=ct_map,
+                                        pet_map=pet_map,
+                                        overwrite=overwrite,
+                                        verbose=verbose
+                                    )
+    else:
+        output_pred_dir_expanded = None # Not used if not expanding
 
-    # LESION CLASSIFICATION (and metrics: iterate over cases in output_pred_dir)
+    # LESION CLASSIFICATION (and metrics: iterate over cases in output_pred_dir (or output_pred_dir_expanded if used))
     os.makedirs(lesion_results_dir, exist_ok=True)
     lesion_results_json_path = os.path.join(lesion_results_dir, lesion_results_json)
     if not overwrite and os.path.exists(lesion_results_json_path):
@@ -1653,8 +1818,13 @@ def post_process(
         if verbose:
             logging.info(f"Lesion results JSON will be saved to {shorten_path(lesion_results_json_path)}")
         # Classify lesions (using generated organ segs) and extract biomarkers
+        if output_pred_dir_expanded is not None:
+            lesion_dir_to_classify = output_pred_dir_expanded
+            logging.info(f"Classifying lesions from expanded segmentations in {shorten_path(output_pred_dir_expanded)}")
+        else:
+            lesion_dir_to_classify = output_pred_dir
         lesion_results_dict = lesion_classifier(
-                                lesion_dir=output_pred_dir,
+                                lesion_dir=lesion_dir_to_classify,
                                 organ_dir=organ_dir,
                                 pet_map=pet_map,
                                 verbose=verbose,
@@ -1664,7 +1834,7 @@ def post_process(
                             )
         lesion_results_dict["SUV_threshold"] = suv_thresh
 
-    # LIVER DISEASE CLASSIFICATION - [ADD THAT THIS IS ONLY DONE IF LIVER DISEASE NOT ALREADY CLASSIFIED]
+    # LIVER DISEASE CLASSIFICATION
     # liver_model_path = '/media/joel/Pal_CT/PSMA-PET/Models/Liver_classifier/full_train/exp1_high_alpha/run_20250704-190755/best_model.pth'
     # Update lesion results with liver mets classification
     update_liver_mets(lesion_results_dict,
@@ -1676,8 +1846,8 @@ def post_process(
                         overwrite=overwrite,
                         verbose=verbose)
 
-    # NOMOGRAM CONSTRUCTION
-    collate_nomogram_info(lesion_results_dict, lesion_results_dir,
+    # CSV SUMMARY CONSTRUCTION
+    collate_csv_summary_info(lesion_results_dict, lesion_results_dir,
                             verbose=verbose,
                             anonymize=anonymize)
 
