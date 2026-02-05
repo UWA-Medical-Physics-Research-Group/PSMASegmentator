@@ -139,6 +139,9 @@ python -m psma_segmentator.cli -i INPUT_DIR -pat YOUR_TOKEN [options]
     Apply an SUV threshold to the lesion segmentation output.  
     **Default:** `0.0`
 
+- `-exp_segs`, `--expand_segmentations`
+    Expand output segmentations during post-processing.
+
 - `-or`, `--organ_dir`  
     Path to directory containing organ segmentation masks for lesion classification.  
     **Default:** `.../output_dir.parent/organ_segmentations`
@@ -358,7 +361,7 @@ If CT and PET images differ in shape, the CT will be automatically resampled to 
 
 ### RTSTRUCT Support (Optional)
 
-If `--rtstruct_processing` is enabled and an RTSTRUCT series is present alongside the CT and PET series' within each study folder, the RTSTRUCT `.dcm` file will be converted - using `Plastimatch` - into individual NIfTI masks, with optional renaming applied. Additionally, output NIfTI masks will be converted into an RTSTRUCT series and saved in a dedicated '_rtstructs' directory alongside the output directory.
+If `-rts`/`--rtstruct_processing` is enabled and an RTSTRUCT series is present alongside the CT and PET series' within each study folder, the RTSTRUCT `.dcm` file will be converted - using `Plastimatch` - into individual NIfTI masks, with optional renaming applied. Additionally, output NIfTI masks will be converted into an RTSTRUCT series and saved in a dedicated '_rtstructs' directory alongside the output directory.
 
 ---
 ---
@@ -376,6 +379,9 @@ After segmentation, post-processing is performed to classify lesions and extract
 
 #### SUV thresholding (optional):
   If an SUV threshold is provided (e.g., `-suv 3.0`), all voxels below this value are removed from the segmentation results. If `overwrite == False`, the non-thresholded predictions are preserved in a backup folder.
+
+#### Segmentation expansion (optional):
+  Expand initial output segmentations. This uses CCA Fast Marching with an adaptive SUV threshold, along with organ-aware constraints, a maximum volume expansion factor, and watershed filtering, to expand the segmentation model's outputs. It's been shown to markedly improve voxel-level sensitivity, with a minor trade-off in voxel-level precision.
 
 #### Organ segmentation generation:
   If not provided, organ segmentations are automatically generated using `TotalSegmentator` and used to classify lesions into anatomical regions.
@@ -400,7 +406,7 @@ A `lesion_results.json` (or `lesion_results_suv_thresh_{X}.json` if SUV threshol
 
     - `site`: Aggregated lesion counts and volumes by specific `TotalSegmentator` site.
     - `region`: Aggregated metrics grouped into higher-level regions (whole body, bone, nodal above/below CIB, visceral, and prostate).
-    - `patient`: SUV mean, max, and total metrics, and if liver metastases have been detected.
+    - `patient`: SUVmean, SUVmax, Total Lesion Uptake (TLU), Total Lesion Quotient (TLQ), and whether liver metastases have been detected.
 
 A final 'All' entry collates the site- and region-level metrics across all provided cases. 
 
@@ -408,13 +414,16 @@ This step runs automatically after inference, unless the output JSON already exi
 
 ### Results CSV:
 
-A `biomarker_info.csv` file. Each row corresponds to a case, with column headings of:
+A `biomarker_info.csv` file. Each row corresponds to a `Case`, with column headings of:
 
+- Number of lesions
+- PSMA Total Tumour Volume (TTV)
 - Tumour SUVmean
 - Tumour SUVmax
-- Total tumour lesion count
-- PSMA Total Tumour Volume (TTV)
+- Total Lesion Uptake (TLU)
+- Total Lesion Quotient (TLQ)
 - Bone metastases present (True/False)
+- Visceral metastases present (True/False)
 - Liver metastases present (True/False)
 
 ---
