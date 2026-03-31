@@ -898,31 +898,35 @@ def generate_organ_segmentations(ct_map, organ_dir,
     if not device == 'cpu':
         device = 'gpu'
 
+    organ_dir_path = Path(organ_dir)
+    organ_dir_path.mkdir(parents=True, exist_ok=True)
+
     # Use ct_map for robust case naming
     # Best practice: save organ segmentations in a dedicated organ_dir, not alongside CT, for clarity and separation of outputs
     total_time_all_cases = 0.0
     n_cases_run = 0
 
     for case_base, ct_path in ct_map.items():
-        out_path_total = os.path.join(organ_dir, f"{case_base}_total.nii.gz")
-        if os.path.exists(out_path_total):
+        ct_path_obj = Path(ct_path).expanduser()
+        out_path_total = organ_dir_path / f"{case_base}_total.nii.gz"
+        if out_path_total.exists():
             print(f"Organ segmentation already exists for {shorten_path(ct_path)} at {shorten_path(out_path_total)}. Skipping.")
             continue
         if verbose:
             print(f"Saving organ segmentation for {shorten_path(ct_path)} to {shorten_path(out_path_total)}")
-        matching_segs = [f for f in os.listdir(organ_dir) if f.startswith(case_base) and f.endswith('.nii.gz')]
+        matching_segs = [p for p in organ_dir_path.glob(f"{case_base}*.nii.gz") if p.is_file()]
         valid_total_found = False
         for seg_file in matching_segs:
-            seg_base = seg_file[:-7] if seg_file.endswith('.nii.gz') else Path(seg_file).stem
+            seg_base = seg_file.name[:-7] if seg_file.name.endswith('.nii.gz') else seg_file.stem
             if '_total' not in seg_base:
-                seg_path = os.path.join(organ_dir, seg_file)
+                seg_path = seg_file
                 try:
                     seg_img = nib.load(seg_path)
                     seg_data = seg_img.get_fdata()
                     unique_labels = np.unique(seg_data)
                     if (len(unique_labels) == 117) or (unique_labels.max() == 117):
-                        new_path = os.path.join(organ_dir, f"{case_base}_total.nii.gz")
-                        os.rename(seg_path, new_path)
+                        new_path = organ_dir_path / f"{case_base}_total.nii.gz"
+                        seg_path.replace(new_path)
                         print(f"Found valid TotalSegmentator output for {case_base} without _total suffix. Renamed to: {shorten_path(new_path)}")
                         valid_total_found = True
                         break
@@ -930,14 +934,26 @@ def generate_organ_segmentations(ct_map, organ_dir,
                     print(f"Could not check file {seg_path}: {e}")
         if valid_total_found:
             continue
-        command = f"TotalSegmentator -i '{ct_path}' -o '{out_path_total}' --ta total --ml -d {device}"
+
+        command = [
+            "TotalSegmentator",
+            "-i", os.fspath(ct_path_obj),
+            "-o", os.fspath(out_path_total),
+            "--ta", "total",
+            "--ml",
+            "-d", device,
+        ]
         if fast:
-            command += " --fast"
+            command.append("--fast")
             print("Running TotalSegmentator in 'fast' mode.")
 
         # Measure wall-clock time for TotalSegmentator invocation (only)
         t0 = time.perf_counter()
-        ret = os.system(command)
+        run_kwargs = {"check": False, "text": True}
+        if not verbose:
+            run_kwargs["capture_output"] = True
+        proc = subprocess.run(command, **run_kwargs)
+        ret = proc.returncode
         t1 = time.perf_counter()
         elapsed = t1 - t0
         total_time_all_cases += elapsed
@@ -945,6 +961,10 @@ def generate_organ_segmentations(ct_map, organ_dir,
 
         if ret != 0:
             print(f"Warning: TotalSegmentator returned non-zero exit code {ret} for case {case_base}")
+            if not verbose and getattr(proc, "stderr", None):
+                err = proc.stderr.strip()
+                if err:
+                    print(f"TotalSegmentator stderr for {case_base}: {err}")
         print(f"TotalSegmentator time for {case_base}: {elapsed:.3f} s")
 
     # Summary timing for all TotalSegmentator runs

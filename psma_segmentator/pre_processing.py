@@ -104,6 +104,7 @@ def pre_process(input_path,
                 handling_subdir_niftis,
                 handling_flattened_niftis,
                 handling_direct_niftis,
+                preprocess_only,
                 verbose, 
                 overwrite):
     ct_dicom_case_map = {} # Map of case names to CT DICOM directories (only for DICOM input)
@@ -155,9 +156,14 @@ def pre_process(input_path,
         list_of_lists_prepro = list_of_lists_already_prepro + list_of_lists_newly_prepro
 
         # 4. For prediction, process only cases needing prediction
-        if not overwrite:
+        if preprocess_only:
+            if verbose:
+                print("Pre-processing only; skipping inference candidate filtering.")
+            list_of_lists_pred = []
+        elif not overwrite:
             list_of_lists_pred = find_predicted(list_of_lists_prepro, 
                                                 output_pred_dir, 
+                                                preprocess_only,
                                                 verbose=verbose)
         else:
             if verbose:
@@ -176,9 +182,14 @@ def pre_process(input_path,
                                                         overwrite, 
                                                         verbose)
         # Find NIfTI files needing prediction
-        if not overwrite:
+        if preprocess_only:
+            if verbose:
+                print("Pre-processing only; skipping inference candidate filtering.")
+            list_of_lists_pred = []
+        elif not overwrite:
             list_of_lists_pred = find_predicted(list_of_lists_prepro, 
                                                 output_pred_dir,
+                                                preprocess_only,
                                                 verbose=verbose)
         else:
             if verbose:
@@ -214,18 +225,23 @@ def pre_process(input_path,
         pt_spacing = pt_img.GetSpacing()
         # Resample if sizes OR SPACINGS differ
         if ct_size != pt_size or ct_spacing != pt_spacing:
-            print(f"CT and PET sizes ({ct_size} | {pt_size}) / spacings ({ct_spacing} | {pt_spacing}) do not match for {base}. Resampling required.")
+            print(f"CT and PET sizes ({ct_size} | {pt_size}) / spacings ({ct_spacing} | {pt_spacing}) do not match for {ct_base}. Resampling required.")
             resample_ct_to_pet(ct_path, pt_path, verbose=True)
         # Always include in preprocessed list
         list_of_lists_prepro = [[str(ct_path), str(pt_path)]]
         # Only include in pred list if prediction does not exist or overwrite is True
-        pred_file = Path(output_pred_dir) / f"{ct_base}.nii.gz"
-        # print(f"Prediction file path: {pred_file}")
-        if pred_file.exists() and not overwrite:
-            print(f"Skipping {ct_base}: prediction exists at {shorten_path(pred_file)}.")
+        if preprocess_only:
+            if verbose:
+                print("Pre-processing only; skipping inference candidate filtering.")
             list_of_lists_pred = []
         else:
-            list_of_lists_pred = [[str(ct_path), str(pt_path)]]
+            pred_file = Path(output_pred_dir) / f"{ct_base}.nii.gz"
+            # print(f"Prediction file path: {pred_file}")
+            if pred_file.exists() and not overwrite:
+                print(f"Skipping {ct_base}: prediction exists at {shorten_path(pred_file)}.")
+                list_of_lists_pred = []
+            else:
+                list_of_lists_pred = [[str(ct_path), str(pt_path)]]
         return list_of_lists_prepro, list_of_lists_pred, ct_dicom_case_map
 
     else:
@@ -350,10 +366,18 @@ def confirm_already_preprocessed(ct_path,
 
     return ct_done, pt_done, gt_done
 
-def find_predicted(list_of_lists_prepro, output_pred_dir, verbose=True):
+def find_predicted(list_of_lists_prepro, 
+                   output_pred_dir, 
+                   preprocess_only,
+                   verbose=True):
     """
     Given list_of_lists_prepro ([[ct_path, pt_path], ...]), return only those pairs for which prediction does not exist.
     """
+    if preprocess_only is None:
+        if verbose:
+            print("Pre-processing only; skipping inference candidate filtering.")
+        return []
+
     list_of_lists_pred = [] # collate pairs STILL NEEDING prediction
     for pair in list_of_lists_prepro:
         ct_path = Path(pair[0])
@@ -644,27 +668,110 @@ def process_rtstruct(dicom_series,
             rename_map=None
         )
 
-        # Extract total_tumor_burden mask (supports both naming conventions)
-        gt_files = list(output_dir_struct.glob("*total_tumor_burden*.nii.gz"))
-        # Also check for TTB.nii.gz naming convention (case-insensitive)
-        if not gt_files:
-            gt_files = list(output_dir_struct.glob("*ttb*.nii.gz"))
-        if not gt_files:
-            gt_files = list(output_dir_struct.glob("*TTB*.nii.gz"))
-        
-        if not gt_files:
-            print(f"Warning: No total_tumor_burden mask found for {case_name} from RTSTRUCT {distinguisher}")
-            continue
-        if len(gt_files) > 1:
-            print(f"Warning: Multiple total_tumor_burden masks found. Using the first one.")
-
         # Save GT with distinguisher in filename if multiple RTSTRUCTs
         if distinguisher:
             gt_dest = output_dir_gts / f"{case_name}_{distinguisher}.nii.gz"
         else:
             gt_dest = output_dir_gts / f"{case_name}.nii.gz"
-        
-        shutil.copy(gt_files[0], gt_dest)
+
+        # Discover total_tumor_burden mask (for fallback and reference geometry)
+        gt_files = list(output_dir_struct.glob("*total_tumor_burden*.nii.gz"))
+        if not gt_files:
+            gt_files = list(output_dir_struct.glob("*ttb*.nii.gz"))
+        if not gt_files:
+            gt_files = list(output_dir_struct.glob("*TTB*.nii.gz"))
+        if len(gt_files) > 1:
+            print(f"Warning: Multiple total_tumor_burden masks found. Using the first one as reference/fallback.")
+
+        # Prefer creating TTB from individual lesion masks
+        lesion_files = sorted(output_dir_struct.glob("*_lesion.nii.gz"))
+        if lesion_files:
+            if verbose:
+                print(f"Found {len(lesion_files)} lesion mask(s) for {case_name}. Combining into TTB mask.")
+
+            lesion_ref_img = sitk.ReadImage(str(lesion_files[0]))
+
+            def _geom_close(img_a, img_b, spacing_atol=1e-4, origin_atol=1e-2, direction_atol=1e-6):
+                return (
+                    img_a.GetSize() == img_b.GetSize()
+                    and np.allclose(img_a.GetSpacing(), img_b.GetSpacing(), atol=spacing_atol)
+                    and np.allclose(img_a.GetOrigin(), img_b.GetOrigin(), atol=origin_atol)
+                    and np.allclose(img_a.GetDirection(), img_b.GetDirection(), atol=direction_atol)
+                )
+
+            # Use TTB reference only when it is geometrically consistent with lesion masks.
+            # Otherwise use lesion grid to avoid slice fragmentation from coarse/misaligned resampling.
+            if gt_files:
+                ttb_ref_img = sitk.ReadImage(str(gt_files[0]))
+                if _geom_close(ttb_ref_img, lesion_ref_img):
+                    ref_img = ttb_ref_img
+                    if verbose:
+                        print(f"  Using reference grid from {gt_files[0].name} (geometry matches lesion masks)")
+                else:
+                    ref_img = lesion_ref_img
+                    print(
+                        f"Warning: TTB reference geometry differs from lesion masks for {case_name}. "
+                        f"Using lesion reference grid ({lesion_files[0].name}) to preserve lesion continuity."
+                    )
+            else:
+                ref_img = lesion_ref_img
+                if verbose:
+                    print(f"  No TTB file found. Using reference grid from {lesion_files[0].name}")
+
+            combined_arr = np.zeros_like(sitk.GetArrayFromImage(ref_img), dtype=bool)
+
+            for lesion_file in lesion_files:
+                lesion_img = sitk.ReadImage(str(lesion_file))
+
+                # Resample lesion mask to reference grid when geometry differs
+                same_geometry = _geom_close(lesion_img, ref_img)
+                if not same_geometry:
+                    if verbose:
+                        print(f"  Resampling {lesion_file.name} to reference geometry")
+                    lesion_img = sitk.Resample(
+                        lesion_img,
+                        ref_img,
+                        sitk.Transform(),
+                        sitk.sitkNearestNeighbor,
+                        0,
+                        sitk.sitkUInt8
+                    )
+
+                lesion_arr = sitk.GetArrayFromImage(lesion_img) > 0
+                combined_arr = np.logical_or(combined_arr, lesion_arr)
+
+            combined_img = sitk.GetImageFromArray(combined_arr.astype(np.uint8))
+            combined_img.CopyInformation(ref_img)
+
+            # Conservative robustness step for sparse RTSTRUCT contours:
+            # if foreground exists on non-consecutive z-slices, close only along z
+            # with a small kernel (~3 mm) to bridge minor missing-slice gaps.
+            fg_slices = np.where(np.any(combined_arr, axis=(1, 2)))[0]
+            if len(fg_slices) > 1:
+                z_gaps = np.diff(fg_slices) - 1
+                if np.any(z_gaps > 0):
+                    z_spacing_mm = float(ref_img.GetSpacing()[2])
+                    z_radius = max(1, int(round(3.0 / max(z_spacing_mm, 1e-6))))
+                    z_radius = min(z_radius, 3)  # keep conservative
+                    if verbose:
+                        print(
+                            f"  Detected sparse z-slice occupancy (max missing gap: {int(np.max(z_gaps))} slices). "
+                            f"Applying conservative z-only binary closing (radius={z_radius})."
+                        )
+                    combined_img = sitk.BinaryMorphologicalClosing(
+                        combined_img,
+                        [0, 0, z_radius],
+                        sitk.sitkBall,
+                    )
+                    combined_img = sitk.Cast(combined_img > 0, sitk.sitkUInt8)
+
+            sitk.WriteImage(combined_img, str(gt_dest))
+        else:
+            # Fallback: use total_tumor_burden mask if no lesion masks are present
+            if not gt_files:
+                print(f"Warning: No *_lesion.nii.gz files and no total_tumor_burden mask found for {case_name} from RTSTRUCT {distinguisher}")
+                continue
+            shutil.copy(gt_files[0], gt_dest)
 
         if verbose:
             print(f"Copied GT mask to {shorten_path(gt_dest)}")

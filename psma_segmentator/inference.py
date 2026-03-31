@@ -84,6 +84,7 @@ def segmentate(model_folder,
     )
     # Initialize predictor from the requested checkpoint. Pass checkpoint_name to allow
     # choosing 'checkpoint_final.pth' (default) or 'checkpoint_best.pth' (or other name).
+    # print(f"Initializing predictor from model folder: {model_folder} with checkpoint: {checkpoint_name} and plans: {plans_name}...")
     predictor.initialize_from_trained_model_folder(model_folder, 
                                                     use_folds=None, 
                                                     checkpoint_name=checkpoint_name, 

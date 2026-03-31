@@ -96,7 +96,7 @@ def main():
     )
     parser.add_argument(
         "--fast", required=False, action="store_true",
-        help="Use fast mode for inference. This disables Test-Time Augmentation (TTA), and uses the --fast flag in TotalSegmentator for faster organ segmentation generation."
+        help="Use fast mode for inference. This uses the Fast (lightweight) version of PSMASegmentator, disables Test-Time Augmentation (TTA), and uses the --fast flag in TotalSegmentator for faster organ segmentation generation."
     )
     parser.add_argument( # not currently in readme
         "-sw", "--show_w", action="store_true", help="Show the GNU General Public License warranty disclaimer."

@@ -24,7 +24,11 @@ import torch
 import re
 import requests
 import shutil
-from psma_segmentator.download_weights import download_model_weights_via_api
+from psma_segmentator.download_weights import (
+    download_model_weights_via_api,
+    prepare_fast_model_weights,
+    prepare_standard_model_weights,
+)
 from psma_segmentator.inference import segmentate
 from psma_segmentator.pre_processing import pre_process, shorten_path
 from psma_segmentator.post_processing import post_process
@@ -265,16 +269,35 @@ This is free software, and you are welcome to redistribute it under certain cond
     # If the user provided a weights_dir and it already contains downloaded
     # model weights, use it as-is and skip fetching the release from GitHub.
     use_provided_weights_without_fetch = False
+    user_specified_weights_dir = weights_dir is not None
+    model_folder = weights_dir
     if weights_dir is not None:
         provided_path = Path(weights_dir)
         if provided_path.exists():
-            # look for any model weight files (.pth) under the provided directory
-            found_pths = list(provided_path.rglob(f"*{checkpoint_name}"))
-            if len(found_pths) > 0:
-                use_provided_weights_without_fetch = True
-                # normalize to resolved string
-                weights_dir = str(provided_path.resolve())
-                print(f"Using provided weights directory with existing weights: {weights_dir}")
+            if fast:
+                try:
+                    model_folder = prepare_fast_model_weights(weights_dir=provided_path, cleanup=True)
+                    use_provided_weights_without_fetch = True
+                    # normalize to resolved string
+                    weights_dir = str(provided_path.resolve())
+                    print(f"Using provided fast weights from: {model_folder}")
+                except FileNotFoundError:
+                    # Fall back to release fetch logic below.
+                    pass
+            else:
+                try:
+                    model_folder = prepare_standard_model_weights(
+                        weights_dir=provided_path,
+                        checkpoint_name=checkpoint_name,
+                        cleanup=True,
+                    )
+                    use_provided_weights_without_fetch = True
+                    # normalize to resolved string
+                    weights_dir = str(provided_path.resolve())
+                    print(f"Using provided standard weights from: {model_folder}")
+                except FileNotFoundError:
+                    # Fall back to release fetch logic below.
+                    pass
 
     if not use_provided_weights_without_fetch:
         try:
@@ -291,18 +314,41 @@ This is free software, and you are welcome to redistribute it under certain cond
         if weights_dir is None:
             weights_dir = get_psmasegmentator_dir(version)
             print(f"\nUsing default weights directory: {weights_dir}")
-        else: # If weights_dir is missing version subdir, add it
-            if not weights_dir.endswith(version):
-                weights_dir = os.path.join(weights_dir, version)
+        else:
+            if fast and user_specified_weights_dir:
+                # In fast mode, keep user-provided weights dir exactly as provided.
+                # This allows local fast_v*.zip assets to be discovered/extracted in-place
+                # and avoids creating unintended nested version folders.
+                weights_dir = str(Path(weights_dir).resolve())
+            else: # If weights_dir is missing version subdir, add it
+                if not weights_dir.endswith(version):
+                    weights_dir = os.path.join(weights_dir, version)
             print(f"\nUsing specified weights directory: {weights_dir}")
 
         setup_psma_segmentator(weights_dir)
 
-        # Download all required model assets (main weights and liver classifier)
-        download_model_weights_via_api(weights_dir, headers, release_data)
+        # Download all required model assets and resolve the model folder to use.
+        model_folder = download_model_weights_via_api(
+            weights_dir,
+            headers,
+            release_data,
+            fast=fast,
+            checkpoint_name=checkpoint_name,
+        )
     else:
         # Use the provided directory and set environment variables accordingly
         setup_psma_segmentator(weights_dir)
+        # If model_folder was not prepared above for this mode, default to weights_dir.
+        if model_folder is None:
+            model_folder = weights_dir
+
+    if fast:
+        print(f"Fast mode enabled. Using fast model folder: {model_folder}")
+        # Overwrite plans file to '*reduced_patch.json' for fast mode (to ensure can run inference)
+        plans_name = "plans_reduced_patch.json"
+    else:
+        print(f"Using standard model folder: {model_folder}")
+        plans_name = "plans.json"
 
     # Dynamically detect the liver classifier model file in weights_dir
     liver_model_path = None
@@ -330,6 +376,7 @@ This is free software, and you are welcome to redistribute it under certain cond
                                                 handling_subdir_niftis=handling_subdir_niftis,
                                                 handling_flattened_niftis=handling_flattened_niftis,
                                                 handling_direct_niftis=handling_direct_niftis,
+                                                preprocess_only=preprocess_only,
                                                 verbose=verbose, overwrite=overwrite)
 
     if preprocess_only:
@@ -338,7 +385,7 @@ This is free software, and you are welcome to redistribute it under certain cond
         return
 
     segmentate(
-        model_folder=weights_dir,
+        model_folder=model_folder,
         list_of_lists_pred=list_of_lists_pred,
         output_pred_dir=output_pred_dir,
         device=device,

@@ -72,6 +72,13 @@ class nnUNetPredictor(object):
         if use_folds is None:
             use_folds = nnUNetPredictor.auto_detect_available_folds(model_training_output_dir, checkpoint_name)
 
+        if use_folds is None or len(use_folds) == 0:
+            raise FileNotFoundError(
+                f"No usable folds were found in '{model_training_output_dir}' for checkpoint '{checkpoint_name}'. "
+                "Expected extracted fold directories like fold_0/checkpoint_final.pth. "
+                "If only fold_*.zip files are present, they must be extracted first."
+            )
+
         dataset_json = load_json(join(model_training_output_dir, 'dataset.json'))
         plans = load_json(join(model_training_output_dir, plans_name))
         plans_manager = PlansManager(plans)
@@ -92,6 +99,12 @@ class nnUNetPredictor(object):
                     'inference_allowed_mirroring_axes' in checkpoint.keys() else None
 
             parameters.append(checkpoint['network_weights'])
+
+        if 'configuration_name' not in locals():
+            raise RuntimeError(
+                f"Failed to infer configuration from checkpoints in '{model_training_output_dir}'. "
+                "No valid fold checkpoint could be read."
+            )
 
         configuration_manager = plans_manager.get_configuration(configuration_name)
         # restore network

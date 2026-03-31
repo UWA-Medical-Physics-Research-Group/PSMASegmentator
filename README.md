@@ -147,7 +147,7 @@ python -m psma_segmentator.cli -i INPUT_DIR -pat YOUR_TOKEN [options]
     **Default:** `.../output_dir.parent/organ_segmentations`
 
 - `--fast`  
-    Uses 'fast' mode for inference. This disables Test-Time Augmentation (TTA), and uses the --fast flag in TotalSegmentator for faster organ segmentation generation.
+    Use fast mode for inference. This uses the Fast (lightweight) version of PSMASegmentator, disables Test-Time Augmentation (TTA), and uses the `--fast` flag in TotalSegmentator for faster organ segmentation generation. Note that only the weights for the Fast model are downloaded/accessed from the given GitHub release when this flag is provided.
 
 - `-f`, `--force`  
     Overwrite any existing preprocessing or segmentation outputs in the output directory.
@@ -165,10 +165,11 @@ python -m psma_segmentator.cli -i INPUT_DIR -pat YOUR_TOKEN [options]
 The following explains how to use PSMASegmentator via Docker.
 You may either:
 
-1. **Load a pre-built Docker image** provided as a `.tar.gz` file, or
-2. **Build the image yourself** directly from the repository.
+1. **Pull the published Docker image** from the repository registry, or
+2. **Load a pre-built Docker image** provided as a `.tar.gz` file, or
+3. **Build the image yourself** directly from the repository.
 
-Both approaches result in a Docker image named `psma-segmentator:latest`.
+All approaches result in a Docker image named `psma-segmentator:latest`.
 
 ---
 
@@ -190,7 +191,26 @@ Both approaches result in a Docker image named `psma-segmentator:latest`.
 
 ---
 
-### 2. Using a Pre-Built Docker Image (`.tar.gz`)
+### 2. Pulling the Published Docker Image
+
+The image is published to the GitHub Container Registry (GHCR). If the repository is private, you must log in with a GitHub Personal Access Token (PAT) that has **read:packages** scope.
+
+```bash
+docker login ghcr.io -u <github-username> -p <PAT>
+docker pull ghcr.io/uwa-medical-physics-research-group/psmasegmentator:latest
+docker tag ghcr.io/uwa-medical-physics-research-group/psmasegmentator:latest psma-segmentator:latest
+```
+
+To pull a specific release tag:
+
+```bash
+docker pull ghcr.io/uwa-medical-physics-research-group/psmasegmentator:<version>
+docker tag ghcr.io/uwa-medical-physics-research-group/psmasegmentator:<version> psma-segmentator:latest
+```
+
+---
+
+### 3. Using a Pre-Built Docker Image (`.tar.gz`)
 
 If using a Docker image file such as:
 ```
@@ -212,7 +232,7 @@ docker images
 
 ---
 
-### 3. Building the Docker Image Yourself
+### 4. Building the Docker Image Yourself
 
 If opting to build the image locally from the repository:
 
@@ -223,7 +243,7 @@ DOCKER_BUILDKIT=1 docker build -t psma-segmentator:latest .
 
 ---
 
-### 4. Prepare Input and Weight Directories
+### 5. Prepare Input and Weight Directories
 
 #### Input directory example
 
@@ -247,7 +267,7 @@ mkdir -p /home/<user>/.totalsegmentator
 
 ---
 
-### 5. Running PSMA Segmentator via Docker
+### 6. Running PSMA Segmentator via Docker
 
 Below is the recommended full command:
 
