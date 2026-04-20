@@ -10,13 +10,31 @@ It supports both DICOM and NIfTI inputs and automatically handles pre-processing
 ---
 ---
 
+# Usage - CLI
+
+The following describes the necessary installations and arguments required to run **PSMASegmentator** by cloning this repo and using the Command Line Interface (CLI).
+
 ## Installation
 
-It is recommended to use a [Miniconda](https://docs.conda.io/en/latest/miniconda.html) virtual environment. Once you've [installed Miniconda](https://www.anaconda.com/docs/getting-started/miniconda/install#quickstart-install-instructions):
+It is recommended to use a [Miniconda](https://docs.conda.io/en/latest/miniconda.html) virtual environment. Once you've [installed Miniconda](https://www.anaconda.com/docs/getting-started/miniconda/install#quickstart-install-instructions), you'll need to accept their terms of service by running:
+
+```bash
+conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/main
+conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/r
+conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/msys2
+```
+
+Next, create a virtual environment:
 
 ```bash
 conda create -n psma_segmentator python=3.11 -y
 conda activate psma_segmentator
+```
+
+If `git` isn't already installed, you can use `conda` to install it on your system, via:
+
+```bash
+conda install git
 ```
 
 Then, clone the repository. As this repo is currently private, you will need a Personal Access Token (PAT) to clone the repo and use the API. To generate a PAT, click [here](https://github.com/settings/tokens) then select **Generate new token --> Classic** and give it 'repo' scope. 
@@ -35,7 +53,7 @@ cd path/to/where/you/put/PSMASegmentator
 pip install -e .
 ```
 
-### Installing Plastimatch (required for RTSTRUCT output)
+### Optional: Installing Plastimatch (ONLY REQUIRED FOR RTSTRUCT PROCESSING)
 
 If you want to convert any input RTSTRUCT files to NIfTIs and/or convert the output segmentations to RTSTRUCT format, you'll need `plastimatch`. This can be installed in two main ways:
 
@@ -75,10 +93,7 @@ plastimatch version 1.9.4-XX
 /usr/local/bin/plastimatch
 ```
 
----
----
-
-## Usage - CLI
+## Running via the CLI
 
 Once installed, you can run segmentations using the command-line interface (CLI):
 
@@ -159,8 +174,9 @@ python -m psma_segmentator.cli -i INPUT_DIR -pat YOUR_TOKEN [options]
     Save the entire CLI stdout/stderr to a timestamped `.txt` file in the parent directory of `--output_dir` (or parent of `--input_dir`, or `cwd` if neither).
 
 ---
+---
 
-## Usage – Docker
+# Usage – Docker
 
 The following explains how to use PSMASegmentator via Docker.
 You may either:
