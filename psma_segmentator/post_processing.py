@@ -942,6 +942,7 @@ def generate_organ_segmentations(ct_map, organ_dir,
             "--ta", "total",
             "--ml",
             "-d", device,
+            "--nr_thr_saving", "1",
         ]
         if fast:
             command.append("--fast")
@@ -1296,6 +1297,10 @@ def lesion_classifier(lesion_dir, # from output_pred_dir
             pt_img = nib.load(pt_path)
         else:
             logging.warning(f"PET image not found for case {case_name} at {pt_path}. SUV metrics will be skipped.")
+
+        if not os.path.exists(organ_total_path):
+            logging.warning(f"Skipping case {case_name}: organ segmentation not found at {organ_total_path} (TotalSegmentator may have failed).")
+            continue
 
         lesion_seg = get_nifti_fdata(lesion_path, verbose=False)
         organ_total = get_nifti_fdata(organ_total_path, verbose=False)
