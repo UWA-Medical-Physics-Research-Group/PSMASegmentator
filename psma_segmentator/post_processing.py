@@ -941,12 +941,17 @@ def generate_organ_segmentations(ct_map, organ_dir,
             "-o", os.fspath(out_path_total),
             "--ta", "total",
             "--ml",
-            "-d", device,
-            "--nr_thr_saving", "1",
+            "-d", device
         ]
         if fast:
             command.append("--fast")
             print("Running TotalSegmentator in 'fast' mode.")
+        # If running on Windows, reduce saving threads to 1 and use force_split:
+        if os.name == 'nt':
+            command.append("--nr_thr_saving")
+            command.append("1")
+            command.append("--force_split")
+            print("Running TotalSegmentator with `--nr_thr_saving 1` and `--force_split` (not recommended for small images) for Windows compatibility.")
 
         # Measure wall-clock time for TotalSegmentator invocation (only)
         t0 = time.perf_counter()
@@ -1299,7 +1304,7 @@ def lesion_classifier(lesion_dir, # from output_pred_dir
             logging.warning(f"PET image not found for case {case_name} at {pt_path}. SUV metrics will be skipped.")
 
         if not os.path.exists(organ_total_path):
-            logging.warning(f"Skipping case {case_name}: organ segmentation not found at {organ_total_path} (TotalSegmentator may have failed).")
+            logging.warning(f"Skipping case {case_name}: organ segmentation not found at {organ_total_path} (review output above to see if TotalSegmentator failed for this case).")
             continue
 
         lesion_seg = get_nifti_fdata(lesion_path, verbose=False)
