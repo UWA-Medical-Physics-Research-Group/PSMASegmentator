@@ -20,16 +20,6 @@ If you use PSMASegmentator, please cite the software as:
 Noble, J., Kendrick, J., et al. *PSMASegmentator: Open-source, AI-based software tool for automatic segmentation and biomarker extraction from PSMA PET/CT*
 GitHub repository: https://github.com/UWA-Medical-Physics-Research-Group/PSMASegmentator
 
-Or, via BibTeX:
-
-@software{PSMASegmentator,
-  author  = {Noble, J., Kendrick, J. et. al.},
-  title   = {PSMASegmentator: Open-source, AI-based software tool for automatic segmentation and biomarker extraction from PSMA PET/CT},
-  url     = {https://github.com/UWA-Medical-Physics-Research-Group/PSMASegmentator},
-  year    = {2026},
-  version = {v1.1.0}
-}
-
 ---
 ---
 
@@ -505,12 +495,6 @@ Each release includes:
 - Plans, dataset and performance metrics files.
 
 Model weights are versioned independently but are bundled with their corresponding code release. This file structure is consistent across releases unless otherwise stated.
-
-## Release History
-
-Release     Full Model   Fast Model   Liver Classifier
-v1.0.0      v0.0.2       —            v0.0.1
-v1.1.0      v0.0.2       v0.0.1       v0.0.1
 
 ---
 ---
