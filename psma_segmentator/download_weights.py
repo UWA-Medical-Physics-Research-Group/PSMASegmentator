@@ -16,6 +16,8 @@ GNU General Public License for more details.
 
 You should have received a copy of the GNU General Public License
 along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
+NB: This software is intended for RESEARCH PURPOSES ONLY.
 """
 
 import os
@@ -47,8 +49,8 @@ def _extract_fold_zip(fold_zip_path: Path, target_dir: Path, cleanup: bool = Tru
 
 
 def prepare_standard_model_weights(weights_dir,
-                                   checkpoint_name: str = "checkpoint_final.pth",
-                                   cleanup: bool = True):
+                                    checkpoint_name: str = "checkpoint_final.pth",
+                                    cleanup: bool = True):
     """
     Resolve and prepare standard model weights from a weights directory.
 

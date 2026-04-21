@@ -16,6 +16,8 @@ GNU General Public License for more details.
 
 You should have received a copy of the GNU General Public License
 along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
+NB: This software is intended for RESEARCH PURPOSES ONLY.
 """
 
 import os
@@ -228,6 +230,8 @@ def psma_segmentator(input_dir: str = None,
 PSMASegmentator Copyright (C) 2025 UWA Medical Physics Research Group, The University of Western Australia, Crawley, WA, Australia
 This program comes with ABSOLUTELY NO WARRANTY; for details, use the `--show_w` flag.
 This is free software, and you are welcome to redistribute it under certain conditions; use the `--show_c` flag for details.
+
+NB: This software is intended for RESEARCH PURPOSES ONLY.
     """
     print(copyright_txt)
 

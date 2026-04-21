@@ -7,14 +7,16 @@ The training dataset is across multiple institutions and scanner types, with 597
 
 It supports both DICOM and NIfTI inputs and automatically handles pre-processing, inference, and post-processing. This includes lesion classification and biomarker extraction, utilizing [TotalSegmentator](https://github.com/wasserth/TotalSegmentator) and a complimentary liver metastases classifier model.
 
+NB: This software is intended for research purposes only.
+
 ---
 ---
 
 # Usage - CLI
 
-The following describes the necessary installations and arguments required to run **PSMASegmentator** by cloning this repo and using the Command Line Interface (CLI).
+The following describes the necessary installations and arguments required to run **PSMASegmentator** by cloning this repo and using the Command Line Interface (CLI). See the next section for Docker usage instructions.
 
-## Installation
+## Installation - Cloning the Repo
 
 It is recommended to use a [Miniconda](https://docs.conda.io/en/latest/miniconda.html) virtual environment. Once you've [installed Miniconda](https://www.anaconda.com/docs/getting-started/miniconda/install#quickstart-install-instructions), you'll need to accept their terms of service by running:
 
@@ -37,16 +39,14 @@ If `git` isn't already installed, you can use `conda` to install it on your syst
 conda install git
 ```
 
-Then, clone the repository. As this repo is currently private, you will need a Personal Access Token (PAT) to clone the repo and use the API. To generate a PAT, click [here](https://github.com/settings/tokens) then select **Generate new token --> Classic** and give it 'repo' scope. 
-
-
-Once you have your PAT, use it and your GitHub username to clone the repo, as shown below:
+Then, clone the repository:
 
 ```bash
-git clone https://<your-username>:<your-PAT>@github.com/UWA-Medical-Physics-Research-Group/PSMASegmentator /path/to/where/you/want/PSMASegmentator
+git clone https://github.com/UWA-Medical-Physics-Research-Group/PSMASegmentator \
+/path/to/where/you/want/PSMASegmentator
 ```
 
-Then move to the cloned repo location before installing in editable mode:
+Now, move to the cloned repo location before installing in editable mode:
 
 ```bash
 cd path/to/where/you/put/PSMASegmentator
@@ -79,7 +79,7 @@ sudo ~/miniconda3/envs/psma_segmentator/bin/python -c \
 "from pyplastimatch.utils.install import install_precompiled_binaries; install_precompiled_binaries()"
 ```
 
-This downloads the correct Ubuntu‑22.04 plastimatch binary and installs it system‑wide.
+This downloads the correct Ubuntu‑22.04 plastimatch binary and installs it system‑wide!
 
 3. Verify the installation:
 ```bash
@@ -95,7 +95,7 @@ plastimatch version 1.9.4-XX
 
 ## Running via the CLI
 
-Once installed, you can run segmentations using the command-line interface (CLI):
+Once installed, you can run segmentations using the CLI (see below for the expected input structure):
 
 ```bash
 python -m psma_segmentator.cli -i INPUT_DIR -pat YOUR_TOKEN [options]
@@ -104,16 +104,13 @@ python -m psma_segmentator.cli -i INPUT_DIR -pat YOUR_TOKEN [options]
 ### Required Arguments
 
 - `-i`, `--input_dir`  
-    Path to input directory containing the images to be segmented. These can be in DICOM or NIfTI format.
+    Path to input directory containing the images to be segmented. These can be in DICOM or NIfTI (.nii.gz) format.
 #### OR:
 - `-i_ct`, `--input_ct`  
     Path to input CT NIfTI file to be segmented.  
 #### AND
 - `-i_pet`, `--input_pet`  
     Path to input PET NIfTI file to be segmented.  
-
-- `-pat`, `--patient_token`  
-    Your patient-specific token for accessing releases from the `PSMASegmentator` GitHub repository (see above).  
 
 ### Optional Arguments
 
@@ -126,10 +123,12 @@ python -m psma_segmentator.cli -i INPUT_DIR -pat YOUR_TOKEN [options]
     **Default:** `~/.psmasegmentator/[version]`
 
 - `-chkpt`, `--checkpoint_name`     
-    Specify the name of the .pth file to use for inference (defaults to `checkpoint_final.pth`).
+    Specify the name of the .pth file to use for inference.
+    **Defailt:** `checkpoint_final.pth`
 
 - `-plans`, `--plans_name`  
-    Name of the plans JSON file to use for inference (e.g., if changing patch size). 
+    Name of the plans JSON file to use for inference (e.g., if changing patch size).
+    **Default:** `plans.json`
 
 - `--version`  
     Specify which release of `PSMASegmentator` to use (e.g., `v1.0.0`).  
@@ -146,32 +145,39 @@ python -m psma_segmentator.cli -i INPUT_DIR -pat YOUR_TOKEN [options]
 
 - `-ppo`, `--preprocess_only`  
     Only perform preprocessing. No segmentation or postprocessing will occur.
+    **Default:** `False`
 
 - `-dpp`, `--disable_postprocessing`  
     Disable post-processing of the output files to just do segmentation.
+    **Default:** `False`
 
 - `-suv`, `--suv_threshold`  
     Apply an SUV threshold to the lesion segmentation output.  
     **Default:** `0.0`
 
 - `-exp_segs`, `--expand_segmentations`
-    Expand output segmentations during post-processing.
+    Expand output segmentations during post-processing. Shown to improve voxel-level DSC, although may introduce segmentation artefacts.
+    **Default:** `False`
 
 - `-or`, `--organ_dir`  
     Path to directory containing organ segmentation masks for lesion classification.  
     **Default:** `.../output_dir.parent/organ_segmentations`
 
 - `--fast`  
-    Use fast mode for inference. This uses the Fast (lightweight) version of PSMASegmentator, disables Test-Time Augmentation (TTA), and uses the `--fast` flag in TotalSegmentator for faster organ segmentation generation. Note that only the weights for the Fast model are downloaded/accessed from the given GitHub release when this flag is provided.
+    Use fast mode for inference. This uses the Fast (lightweight) version of PSMASegmentator, disables Test-Time Augmentation (TTA), and uses the `--fast` flag in TotalSegmentator for faster organ segmentation generation. Note that only the weights for the Fast model are downloaded/accessed from the given GitHub release when this flag is provided. Highly recommended for non-GPU accelerated inference.
+    **Default:** `False`
 
 - `-f`, `--force`  
     Overwrite any existing preprocessing or segmentation outputs in the output directory.
+    **Default:** `False`
 
 - `-v`, `--verbose`  
     Enable detailed logging and progress messages.
+    **Default:** `False`
 
 - `--save_log`  
     Save the entire CLI stdout/stderr to a timestamped `.txt` file in the parent directory of `--output_dir` (or parent of `--input_dir`, or `cwd` if neither).
+    **Default:** `False`
 
 ---
 ---
@@ -179,17 +185,10 @@ python -m psma_segmentator.cli -i INPUT_DIR -pat YOUR_TOKEN [options]
 # Usage – Docker
 
 The following explains how to use PSMASegmentator via Docker.
-You may either:
-
-1. **Pull the published Docker image** from the repository registry, or
-2. **Load a pre-built Docker image** provided as a `.tar.gz` file, or
-3. **Build the image yourself** directly from the repository.
-
-All approaches result in a Docker image named `psma-segmentator:latest`.
 
 ---
 
-### 1. Prerequisites
+## 1. Prerequisites
 
 * [Docker installed](https://docs.docker.com/get-docker/) (version 20.10+ recommended)
 
@@ -207,7 +206,19 @@ All approaches result in a Docker image named `psma-segmentator:latest`.
 
 ---
 
-### 2. Pulling the Published Docker Image
+## 2. Obtaining the Docker Image
+
+You may either:
+
+a. **Pull the published Docker image** from the repository registry, or
+b. **Load a pre-built Docker image** provided as a `.tar.gz` file, or
+c. **Build the image yourself** directly from the repository.
+
+All approaches result in a Docker image named `psma-segmentator:latest`.
+
+---
+
+### 2a. Pulling the Published Docker Image
 
 The image is published to the GitHub Container Registry (GHCR). If the repository is private, you must log in with a GitHub Personal Access Token (PAT) that has **read:packages** scope.
 
@@ -226,7 +237,7 @@ docker tag ghcr.io/uwa-medical-physics-research-group/psmasegmentator:<version> 
 
 ---
 
-### 3. Using a Pre-Built Docker Image (`.tar.gz`)
+### 2b. Using a Pre-Built Docker Image (`.tar.gz`)
 
 If using a Docker image file such as:
 ```
@@ -248,7 +259,7 @@ docker images
 
 ---
 
-### 4. Building the Docker Image Yourself
+### 2c. Building the Docker Image Yourself
 
 If opting to build the image locally from the repository:
 
@@ -259,9 +270,9 @@ DOCKER_BUILDKIT=1 docker build -t psma-segmentator:latest .
 
 ---
 
-### 5. Prepare Input and Weight Directories
+## 3. Prepare Input and Weight Directories
 
-#### Input directory example
+### Input directory example
 
 ```
 /home/<user>/data/
@@ -274,7 +285,7 @@ CT_0000.nii.gz
 PT_0001.nii.gz
 ```
 
-#### Create weights directories (required for permissions)
+### Create weights directories (required for permissions)
 
 ```bash
 mkdir -p /home/<user>/.psmasegmentator
@@ -283,9 +294,9 @@ mkdir -p /home/<user>/.totalsegmentator
 
 ---
 
-### 6. Running PSMA Segmentator via Docker
+## 4. Running via Docker
 
-Below is the recommended full command:
+Below is the recommended full command. See below for the expected input structure:
 
 ```bash
 docker run --rm --gpus all \
@@ -306,11 +317,11 @@ docker run --rm --gpus all \
 
 ---
 
-#### Explanation of Key Options
+### Explanation of Key Arguments
 
-#### Docker runtime options
+#### Runtime arguments
 
-| Option                     | Meaning                                    |
+| Argument                   | Meaning                                    |
 | -------------------------- | ------------------------------------------ |
 | `--rm`                     | Remove container after completion          |
 | `--gpus all`               | Use all available GPUs                     |
@@ -321,12 +332,12 @@ docker run --rm --gpus all \
 
 #### Container arguments
 
-| Argument | Purpose                               |
+| Argument | Meaning                               |
 | -------- | ------------------------------------- |
 | `-plans` | Network plan JSON file                |
+| `-i`     | Input directory                       |
 | `-i_ct`  | CT input image                        |
 | `-i_pet` | PET input image                       |
-| `-i`     | Input directory                       |
 | `-o`     | Output directory                      |
 | `-pat`   | GitHub Personal Access Token          |
 | `-w`     | Model weights folder inside container |
@@ -338,7 +349,7 @@ See 'CLI Usage' above for an explanation of the other optional arguments.
 
 ## Expected Input Structure
 
-This tool supports both DICOM and NIfTI inputs. The expected structure varies slightly depending on the format:
+This tool supports both DICOM and NIfTI inputs. The expected structure varies depending on the format:
 
 ### DICOM Input
 
@@ -413,19 +424,19 @@ An `nnUNetPredictor` is used for inference with the downloaded model weights, wi
 
 After segmentation, post-processing is performed to classify lesions and extract biomarkers. This includes:
 
-#### SUV thresholding (optional):
+### SUV thresholding (optional):
   If an SUV threshold is provided (e.g., `-suv 3.0`), all voxels below this value are removed from the segmentation results. If `overwrite == False`, the non-thresholded predictions are preserved in a backup folder.
 
-#### Segmentation expansion (optional):
-  Expand initial output segmentations. This uses CCA Fast Marching with an adaptive SUV threshold, along with organ-aware constraints, a maximum volume expansion factor, and watershed filtering, to expand the segmentation model's outputs. It's been shown to markedly improve voxel-level sensitivity, with a minor trade-off in voxel-level precision.
-
-#### Organ segmentation generation:
+### Organ segmentation generation:
   If not provided, organ segmentations are automatically generated using `TotalSegmentator` and used to classify lesions into anatomical regions.
 
-#### Lesion classification and metrics extraction:
-  Each lesion is assigned to an organ or classified as nodal (either above or below the Common Iliac Bifurcation) based on an overlap threshold, and key metrics are extracted at the lesion- and patient-level.
+### Segmentation expansion (optional):
+  Expand initial output segmentations, controlled by `-exp_segs` flag. This uses CCA Fast Marching with an adaptive SUV threshold, along with organ-aware constraints, a maximum volume expansion factor, and watershed filtering, to expand the segmentation model's outputs. It's been shown to markedly improve voxel-level sensitivity, with a minor trade-off in voxel-level precision.
 
-#### Liver disease classification:
+### Lesion classification and metrics extraction:
+  Each lesion is assigned to an organ or classified as nodal (either above or below the Common Iliac Bifurcation) based on an overlap threshold, and key metrics are extracted at the lesion-, patient-, and cohort-level.
+
+### Liver disease classification:
   A complimentary binary classifier model is present to detect the presence of liver metastases, a significant negative prognosticator.
 
 ---
@@ -452,8 +463,8 @@ This step runs automatically after inference, unless the output JSON already exi
 
 A `biomarker_info.csv` file. Each row corresponds to a `Case`, with column headings of:
 
-- Number of lesions
-- PSMA Total Tumour Volume (TTV)
+- Total Lesion Count (TLC)
+- Total Tumour Volume (TTV, ml)
 - Tumour SUVmean
 - Tumour SUVmax
 - Total Lesion Uptake (TLU)
@@ -462,4 +473,5 @@ A `biomarker_info.csv` file. Each row corresponds to a `Case`, with column headi
 - Visceral metastases present (True/False)
 - Liver metastases present (True/False)
 
+---
 ---
