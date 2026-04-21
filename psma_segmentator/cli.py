@@ -61,7 +61,7 @@ def main():
         help="Name of the plans file to use for inference."
     )
     parser.add_argument(
-        "-pat", "--personal_access_token", required = True, 
+        "-pat", "--personal_access_token", required = False, default = None, type=str,
         help= "GitHub Personal Access Token (PAT) for downloading weights."
     )
     parser.add_argument(
