@@ -7,7 +7,28 @@ The training dataset is across multiple institutions and scanner types, with 597
 
 It supports both DICOM and NIfTI inputs and automatically handles pre-processing, inference, and post-processing. This includes lesion classification and biomarker extraction, utilizing [TotalSegmentator](https://github.com/wasserth/TotalSegmentator) and a complimentary liver metastases classifier model.
 
-NB: This software is intended for research purposes only.
+NB: This software is intended for research purposes only, not clinical diagnosis or treatment, and comes with absolutely no warranty.
+
+## License
+
+This tool is released under the GPL-3.0 License. See the LICENSE file, or run the `-show_w` or `-show_c` commands (explained below) for more details.
+
+## Citation
+
+If you use PSMASegmentator, please cite the software as:
+
+Noble, J., Kendrick, J., et al. *PSMASegmentator: Open-source, AI-based software tool for automatic segmentation and biomarker extraction from PSMA PET/CT*
+GitHub repository: https://github.com/UWA-Medical-Physics-Research-Group/PSMASegmentator
+
+Or, via BibTeX:
+
+@software{PSMASegmentator,
+  author  = {Noble, J., Kendrick, J. et. al.},
+  title   = {PSMASegmentator: Open-source, AI-based software tool for automatic segmentation and biomarker extraction from PSMA PET/CT},
+  url     = {https://github.com/UWA-Medical-Physics-Research-Group/PSMASegmentator},
+  year    = {2026},
+  version = {v1.1.0}
+}
 
 ---
 ---
@@ -98,7 +119,7 @@ plastimatch version 1.9.4-XX
 Once installed, you can run segmentations using the CLI (see below for the expected input structure):
 
 ```bash
-python -m psma_segmentator.cli -i INPUT_DIR -pat YOUR_TOKEN [options]
+python -m psma_segmentator.cli -i INPUT_DIR [options]
 ```
 
 ### Required Arguments
@@ -220,10 +241,9 @@ All approaches result in a Docker image named `psma-segmentator:latest`.
 
 ### 2a. Pulling the Published Docker Image
 
-The image is published to the GitHub Container Registry (GHCR). If the repository is private, you must log in with a GitHub Personal Access Token (PAT) that has **read:packages** scope.
+The image is published to the GitHub Container Registry (GHCR). Pull it via:
 
 ```bash
-docker login ghcr.io -u <github-username> -p <PAT>
 docker pull ghcr.io/uwa-medical-physics-research-group/psmasegmentator:latest
 docker tag ghcr.io/uwa-medical-physics-research-group/psmasegmentator:latest psma-segmentator:latest
 ```
@@ -311,7 +331,6 @@ docker run --rm --gpus all \
     -i_ct /data/CT_0000.nii.gz \
     -i_pet /data/PT_0001.nii.gz \
     -o /data/psmasegmentator_outputs \
-    -pat <PAT> \
     -w /weights/1.0.0
 ```
 
@@ -339,7 +358,6 @@ docker run --rm --gpus all \
 | `-i_ct`  | CT input image                        |
 | `-i_pet` | PET input image                       |
 | `-o`     | Output directory                      |
-| `-pat`   | GitHub Personal Access Token          |
 | `-w`     | Model weights folder inside container |
 
 See 'CLI Usage' above for an explanation of the other optional arguments.
@@ -347,11 +365,11 @@ See 'CLI Usage' above for an explanation of the other optional arguments.
 ---
 ---
 
-## Expected Input Structure
+# Expected Input Structure
 
 This tool supports both DICOM and NIfTI inputs. The expected structure varies depending on the format:
 
-### DICOM Input
+## DICOM Input
 
 The root `input_dir` should contain case folders, each representing a patient + acquisition. Each case folder should contain study-level folders, which in turn contain modality-specific DICOM subfolders:
 
@@ -371,11 +389,11 @@ input_dir/
 Each study folder must contain at least one CT and one valid PET series. 
 PET series are validated for required DICOM tags needed for SUV conversion (e.g., `CorrectedImage`, `DecayCorrection`, `Units`, etc.).
 
-### NIfTI Input
+## NIfTI Input
 
 If the pipeline detects any `.nii.gz` files anywhere under `input_dir`, it assumes the entire input is NIfTI-based and processes the files in either a flattened or case-subfolder format:
 
-#### Option 1: Flat NIfTI Files
+### Option 1: Flat NIfTI Files
 ```bash
 input_dir/
 ├── patient1_0000.nii.gz  ← CT
@@ -385,7 +403,7 @@ input_dir/
 ...
 ```
 
-#### Option 2: Case Subfolders
+### Option 2: Case Subfolders
 ```bash
 input_dir/
 ├── patient1/
@@ -399,53 +417,53 @@ input_dir/
 
 The pipeline recursively scans all `.nii.gz` files and groups them by case using the filename pattern `caseid_0000.nii.gz` (CT) and `caseid_0001.nii.gz` (PET). This aligns with [nnUNet's](https://github.com/MIC-DKFZ/nnUNet) naming convention.
 
-#### Option 3: Direct NIfTI Input
+### Option 3: Direct NIfTI Input
 Alternatively, you can pass direct paths to CT and PET NIfTI files using the `-i_ct` and `-i_pet` flags. *In this case, it is recommended to specify an `--output_dir` as well, as the default output directory will be specific to the input file which can bloat the parent directory*.
 
 All files must already be co-registered and in consistent orientation (LPS assumed). Additionally, *all PET images already in `nii.gz` format are assumed to be SUV-converted*.
 
 If CT and PET images differ in shape, the CT will be automatically resampled to the PET image.
 
-### RTSTRUCT Support (Optional)
+## RTSTRUCT Support (Optional)
 
 If `-rts`/`--rtstruct_processing` is enabled and an RTSTRUCT series is present alongside the CT and PET series' within each study folder, the RTSTRUCT `.dcm` file will be converted - using `Plastimatch` - into individual NIfTI masks, with optional renaming applied. Additionally, output NIfTI masks will be converted into an RTSTRUCT series and saved in a dedicated '_rtstructs' directory alongside the output directory.
 
 ---
 ---
 
-## Inference and Output Segmentations
+# Inference and Output Segmentations
 
 An `nnUNetPredictor` is used for inference with the downloaded model weights, with the output predictions being saved to the specified (or default) `--output_dir`. 
 
 ---
 ---
 
-## Post-processing
+# Post-processing
 
 After segmentation, post-processing is performed to classify lesions and extract biomarkers. This includes:
 
-### SUV thresholding (optional):
+## SUV thresholding (optional):
   If an SUV threshold is provided (e.g., `-suv 3.0`), all voxels below this value are removed from the segmentation results. If `overwrite == False`, the non-thresholded predictions are preserved in a backup folder.
 
-### Organ segmentation generation:
+## Organ segmentation generation:
   If not provided, organ segmentations are automatically generated using `TotalSegmentator` and used to classify lesions into anatomical regions.
 
-### Segmentation expansion (optional):
+## Segmentation expansion (optional):
   Expand initial output segmentations, controlled by `-exp_segs` flag. This uses CCA Fast Marching with an adaptive SUV threshold, along with organ-aware constraints, a maximum volume expansion factor, and watershed filtering, to expand the segmentation model's outputs. It's been shown to markedly improve voxel-level sensitivity, with a minor trade-off in voxel-level precision.
 
-### Lesion classification and metrics extraction:
+## Lesion classification and metrics extraction:
   Each lesion is assigned to an organ or classified as nodal (either above or below the Common Iliac Bifurcation) based on an overlap threshold, and key metrics are extracted at the lesion-, patient-, and cohort-level.
 
-### Liver disease classification:
+## Liver disease classification:
   A complimentary binary classifier model is present to detect the presence of liver metastases, a significant negative prognosticator.
 
 ---
 
-## Output Summary Files
+# Output Summary Files
 
 The following output files are saved in the specified output directory or, by default, the `[input_folder]_lesion_classification` sub-folder.
 
-### Results JSON:
+## Results JSON:
 
 A `lesion_results.json` (or `lesion_results_suv_thresh_{X}.json` if SUV thresholding is applied). It contains an entry for each case, consisting of:
 - `lesions`: Dictionary providing the `TotalSegmentator` site code and name, and volume (in cc) for each segmented lesion.
@@ -459,7 +477,7 @@ A final 'All' entry collates the site- and region-level metrics across all provi
 
 This step runs automatically after inference, unless the output JSON already exists and `--overwrite` is not set.
 
-### Results CSV:
+## Results CSV:
 
 A `biomarker_info.csv` file. Each row corresponds to a `Case`, with column headings of:
 
@@ -472,6 +490,27 @@ A `biomarker_info.csv` file. Each row corresponds to a `Case`, with column headi
 - Bone metastases present (True/False)
 - Visceral metastases present (True/False)
 - Liver metastases present (True/False)
+
+---
+---
+
+# Versioning and Releases
+
+PSMASegmentator uses semantic versioning for code releases (vX.Y.Z).
+
+Each release includes:
+- One **Full Segmentator** model, comprised of model weight zips.
+- One **Fast Segmentator** model (in a zipped subfolder).
+- One complimentary **Liver Classifier** model.
+- Plans, dataset and performance metrics files.
+
+Model weights are versioned independently but are bundled with their corresponding code release. This file structure is consistent across releases unless otherwise stated.
+
+## Release History
+
+Release     Full Model   Fast Model   Liver Classifier
+v1.0.0      v0.0.2       —            v0.0.1
+v1.1.0      v0.0.2       v0.0.1       v0.0.1
 
 ---
 ---
