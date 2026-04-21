@@ -266,9 +266,10 @@ NB: This software is intended for RESEARCH PURPOSES ONLY.
     #     )
 
     headers = {
-        "Authorization": f"Bearer {token}",
         "User-Agent": "PSMASegmentator"
     }
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
 
     # If the user provided a weights_dir and it already contains downloaded
     # model weights, use it as-is and skip fetching the release from GitHub.

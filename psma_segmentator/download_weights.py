@@ -353,10 +353,11 @@ def download_file_from_api(asset_url, local_path, headers, progress_bar=True):
     Returns:
         None
     """
-    # Ensure correct Accept header for ZIP files
-    headers["Accept"] = "application/octet-stream"
+    # Ensure correct Accept header for ZIP files without mutating shared headers
+    request_headers = dict(headers or {})
+    request_headers["Accept"] = "application/octet-stream"
 
-    response = requests.get(asset_url, headers=headers, stream=True)
+    response = requests.get(asset_url, headers=request_headers, stream=True)
     response.raise_for_status()
 
     total_size = int(response.headers.get("content-length", 0))
