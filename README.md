@@ -23,6 +23,12 @@ GitHub repository: https://github.com/UWA-Medical-Physics-Research-Group/PSMASeg
 ---
 ---
 
+# Software Overview
+
+<img width="1002" height="860" alt="PSMASegmentator tool overview (26:6:2026) - Publication" src="https://github.com/user-attachments/assets/171e7451-d301-4e2a-a758-9f8851e583fa" />
+
+---
+
 # Usage - CLI
 
 The following describes the necessary installations and arguments required to run **PSMASegmentator** by cloning this repo and using the Command Line Interface (CLI). See the next section for Docker usage instructions.
@@ -118,10 +124,10 @@ python -m psma_segmentator.cli -i INPUT_DIR [options]
     Path to input directory containing the images to be segmented. These can be in DICOM or NIfTI (.nii.gz) format.
 #### OR:
 - `-i_ct`, `--input_ct`  
-    Path to input CT NIfTI file to be segmented.  
+    Path to input CT NIfTI file (.nii.gz) to be segmented.  
 #### AND
 - `-i_pet`, `--input_pet`  
-    Path to input PET NIfTI file to be segmented.  
+    Path to input PET NIfTI file (.nii.gz) to be segmented.  
 
 ### Optional Arguments
 
