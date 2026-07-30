@@ -27,7 +27,6 @@ dependencies = [
     "dicom2nifti",
     "pyarrow",
     "pydicom>=3.0.0",
-    "nnunetv2<=2.7",
     "TotalSegmentator==2.4.0",
     "monai"
 ]
@@ -41,4 +40,4 @@ psma_segmentator = "psma_segmentator.cli:main"
 "Bug Tracker" = "https://github.com/yourusername/psma_segmentator/issues"
 
 [tool.setuptools]
-packages = ["psma_segmentator", "nnunetv2"]
+packages = ["psma_segmentator", "nnunetpsma"]

@@ -31,7 +31,7 @@ import multiprocessing
 import pydicom
 from datetime import datetime
 import math
-from nnunetv2.inference.predict_from_raw_data import nnUNetPredictor
+from nnunetpsma.inference.predict_from_raw_data import nnUNetPredictor
 import time
 
 

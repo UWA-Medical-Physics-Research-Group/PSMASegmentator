@@ -231,7 +231,7 @@ a. **Pull the published Docker image** from the repository registry, or
 b. **Load a pre-built Docker image** provided as a `.tar.gz` file, or
 c. **Build the image yourself** directly from the repository.
 
-All approaches result in a Docker image named `psma-segmentator:latest`.
+All approaches result in a Docker image named `psma_segmentator:latest`.
 
 ---
 
@@ -241,14 +241,14 @@ The image is published to the GitHub Container Registry (GHCR). Pull it via:
 
 ```bash
 docker pull ghcr.io/uwa-medical-physics-research-group/psmasegmentator:latest
-docker tag ghcr.io/uwa-medical-physics-research-group/psmasegmentator:latest psma-segmentator:latest
+docker tag ghcr.io/uwa-medical-physics-research-group/psmasegmentator:latest psma_segmentator:latest
 ```
 
 To pull a specific release tag:
 
 ```bash
 docker pull ghcr.io/uwa-medical-physics-research-group/psmasegmentator:<version>
-docker tag ghcr.io/uwa-medical-physics-research-group/psmasegmentator:<version> psma-segmentator:latest
+docker tag ghcr.io/uwa-medical-physics-research-group/psmasegmentator:<version> psma_segmentator:latest
 ```
 
 ---
@@ -257,14 +257,14 @@ docker tag ghcr.io/uwa-medical-physics-research-group/psmasegmentator:<version> 
 
 If using a Docker image file such as:
 ```
-psma-segmentator_<yyyymmdd>.tar.gz
+psma_segmentator_<yyyymmdd>.tar.gz
 ```
 
 #### Load the image into Docker
 
 ```bash
 cd /path/to/image
-docker load -i psma-segmentator_<yyyymmdd>.tar.gz
+docker load -i psma_segmentator_<yyyymmdd>.tar.gz
 ```
 
 Verify the image is now available:
@@ -280,8 +280,8 @@ docker images
 If opting to build the image locally from the repository:
 
 ```bash
-cd /path/to/psma-segmentator
-DOCKER_BUILDKIT=1 docker build -t psma-segmentator:latest .
+cd /path/to/psma_segmentator
+DOCKER_BUILDKIT=1 docker build -t psma_segmentator:latest .
 ```
 
 ---
@@ -322,7 +322,7 @@ docker run --rm --gpus all \
     -v /home/<user>/.psmasegmentator:/weights \
     -v /home/<user>/.totalsegmentator:/ts_weights \
     -e TOTALSEG_HOME_DIR=/ts_weights \
-    psma-segmentator:latest \
+    psma_segmentator:latest \
     -plans 'plans_reduced_patch.json' \
     -i_ct /data/CT_0000.nii.gz \
     -i_pet /data/PT_0001.nii.gz \
