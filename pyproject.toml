@@ -39,5 +39,5 @@ psma_segmentator = "psma_segmentator.cli:main"
 "Repository" = "https://github.com/yourusername/psma_segmentator"
 "Bug Tracker" = "https://github.com/yourusername/psma_segmentator/issues"
 
-[tool.setuptools]
-packages = ["psma_segmentator", "nnunetpsma"]
+[tool.setuptools.packages.find]
+include = ["psma_segmentator*", "nnunetpsma*"]
