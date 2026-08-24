@@ -23,6 +23,7 @@ NB: This software is intended for RESEARCH PURPOSES ONLY.
 import os
 import tempfile
 from pathlib import Path
+from typing import Optional, Tuple, Union
 import numpy as np
 from tqdm import tqdm
 import SimpleITK as sitk
@@ -44,6 +45,9 @@ def segmentate(model_folder,
                 step_size=0.5,
                 checkpoint_name: str = "checkpoint_final.pth",
                 plans_name: str = "plans.json",
+                save_probs: bool = False,
+                use_folds: Optional[Tuple[Union[int, str], ...]] = None,
+                overwrite: bool = True
                 ):
     """
     Runs inference using nnUNet for all cases in the preprocessed directory.
@@ -88,7 +92,7 @@ def segmentate(model_folder,
     # choosing 'checkpoint_final.pth' (default) or 'checkpoint_best.pth' (or other name).
     # print(f"Initializing predictor from model folder: {model_folder} with checkpoint: {checkpoint_name} and plans: {plans_name}...")
     predictor.initialize_from_trained_model_folder(model_folder, 
-                                                    use_folds=None, 
+                                                    use_folds=use_folds, 
                                                     checkpoint_name=checkpoint_name, 
                                                     plans_name=plans_name)
 
@@ -103,14 +107,17 @@ def segmentate(model_folder,
     print(f" - Device: {device}")
     print(f" - Use TTA: {use_tta}")
     print(f" - Tile step size: {step_size}")
+    print(f" - Save probabilities: {save_probs}")
+    print(f" - Folds: {use_folds}")
+    print(f" - Overwrite: {overwrite}")
 
     # Run prediction
     t0 = time.perf_counter()
     predictor.predict_from_files(
         list_of_lists_or_source_folder=list_of_lists_pred,
         output_folder_or_list_of_truncated_output_files=output_pred_dir,
-        save_probabilities=False,
-        overwrite=True
+        save_probabilities=save_probs,
+        overwrite=overwrite
     )
     t1 = time.perf_counter()
     total_inference_time_s = t1 - t0

@@ -26,6 +26,7 @@ import torch
 import re
 import requests
 import shutil
+from typing import Optional, Tuple, Union
 from psma_segmentator.download_weights import (
     download_model_weights_via_api,
     prepare_fast_model_weights,
@@ -197,9 +198,11 @@ def psma_segmentator(input_dir: str = None,
                         overwrite: bool = False,
                         preprocess_only: bool = False,
                         disable_postprocessing: bool = False,
+                        organ_dir: str = None,
                         suv_thresh: float = 0.0,
                         exp_segs: bool = False,
-                        organ_dir: str = None,
+                        save_probs: bool = False,
+                        use_folds: Optional[Tuple[Union[int, str], ...]] = None,
                         fast: bool = False,
                         show_w: bool = False,
                         show_c: bool = False,
@@ -395,9 +398,12 @@ NB: This software is intended for RESEARCH PURPOSES ONLY.
         output_pred_dir=output_pred_dir,
         device=device,
         use_tta=not fast,  # Use TTA unless fast mode is specified 
-        verbose=verbose,
         checkpoint_name=checkpoint_name,
-        plans_name=plans_name
+        plans_name=plans_name,
+        save_probs=save_probs,
+        use_folds=use_folds,
+        overwrite=overwrite,
+        verbose=verbose
     )
     
 

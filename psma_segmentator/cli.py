@@ -73,6 +73,10 @@ def main():
         help="Device to use for processing, e.g., 'cpu', 'cuda', or 'cuda:n' (0 <= n <= num_gpus). Defaults to 'cuda' if available, otherwise 'cpu'."
     )
     parser.add_argument(
+        "-or", "--organ_dir", required=False, default=None,
+        help="Directory containing organ segmentations for post-processing lesion classification. Defaults to .../output_dir.parent/organ_segmentations."
+    )
+    parser.add_argument(
         "-rts", "--rtstruct_processing", required=False, action="store_true",
         help="If True, will convert any found RTSTRUCTs to NIfTI and convert output NIfTIs to RTSTRUCTs. Defaults to False."
     )        
@@ -92,22 +96,30 @@ def main():
         "-exp_segs", "--expand_segmentations", required=False, action="store_true",
         help="Expand segmentations during post-processing."
     )
+    parser.add_argument("-save_probs", "--save_probabilities", required=False, action="store_true",
+        help="Save probability maps for each class in addition to the final segmentation."
+    )
     parser.add_argument(
-        "-or", "--organ_dir", required=False, default=None,
-        help="Directory containing organ segmentations for post-processing lesion classification. Defaults to .../output_dir.parent/organ_segmentations."
+        "-fold",
+        "--use_folds",
+        nargs="+",
+        type=str,
+        default=None,
+        metavar="FOLD",
+        help="Folds to use, for example: -fold 0 1 2. Defaults to all folds.",
     )
     parser.add_argument(
         "--fast", required=False, action="store_true",
         help="Use fast mode for inference. This uses the Fast (lightweight) version of PSMASegmentator, disables Test-Time Augmentation (TTA), and uses the --fast flag in TotalSegmentator for faster organ segmentation generation."
     )
     parser.add_argument( # not currently in readme
+        "-an", "--anonymize", action="store_true", default=False, help="Anonymize patient-identifiable data in the output results."
+    )
+    parser.add_argument(
         "-sw", "--show_w", action="store_true", help="Show the GNU General Public License warranty disclaimer."
     )
-    parser.add_argument( # not currently in readme
+    parser.add_argument(
         "-sc", "--show_c", action="store_true", help="Show the GNU General Public License terms and conditions."
-    )
-    parser.add_argument( # not currently in readme
-        "-an", "--anonymize", action="store_true", default=False, help="Anonymize patient-identifiable data in the output results."
     )
     parser.add_argument(
         "-f", "--force", dest="overwrite", required=False, action="store_true",
@@ -222,18 +234,24 @@ def main():
                 rtstruct_processing = args.rtstruct_processing,
                 preprocess_only = args.preprocess_only,
                 disable_postprocessing = args.disable_postprocessing,
+                organ_dir = args.organ_dir,
                 suv_thresh = args.suv_threshold,
                 exp_segs = args.expand_segmentations,
-                organ_dir = args.organ_dir,
+                save_probs = args.save_probabilities,
+                use_folds = (
+                    tuple("all" if fold == "all" else int(fold) for fold in args.use_folds)
+                    if args.use_folds is not None
+                    else None
+                ),
                 fast = args.fast,
+                anonymize = args.anonymize,
                 show_w = args.show_w,
                 show_c = args.show_c,
-                anonymize = args.anonymize,
                 overwrite = args.overwrite,
                 verbose = args.verbose,
             )
     finally:
-        # Restore stdout/stderr and close log file if we opened one
+        # Restore stdout/stderr and close log file IF one was opened...
         if getattr(args, "save_log", False) and log_file is not None:
             try:
                 sys.stdout = original_stdout
@@ -247,5 +265,6 @@ def main():
                 log_file.close()
             except Exception:
                 pass
+
 if __name__ == "__main__":
     main()
